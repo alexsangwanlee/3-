@@ -1,5 +1,6 @@
 """Control panel: settings files are edited safely, and the local API refuses anything not from the page."""
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -23,7 +24,8 @@ def test_toml_update_keeps_comments_and_tables():
 
 
 @pytest.mark.parametrize("bad", [
-    {"mode": "yolo"}, {"budget_krw": -1}, {"markets": ["BTC"]}, {"strategies": ["hold"]},
+    {"mode": "yolo"}, {"budget_krw": -1}, {"budget_krw": "3000"}, {"paper_krw": "0"},
+    {"markets": ["BTC"]}, {"strategies": ["hold"]},
     {"UPBIT_ACCESS_KEY": "short"}, {"TELEGRAM_CHAT_ID": "abc"},
 ])
 def test_settings_are_validated(bad):
@@ -75,3 +77,27 @@ def test_secrets_are_never_sent_to_the_page(server, tmp_path):
         body = r.read().decode()
     assert "A" * 40 not in body and "S" * 40 not in body
     assert json.loads(body)["keys_set"] is True
+
+
+def test_an_empty_amount_keeps_the_saved_value():
+    clean, errors = ui.validate({"paper_krw": "", "budget_krw": " "})
+    assert errors == [] and clean == {}
+
+
+def test_the_mode_cannot_change_under_a_running_bot(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ui.live, "running_mode", lambda: "paper")
+    code, body = ui.save({"mode": "live"})
+    assert code == 409 and not (tmp_path / "config.toml").exists()
+    assert ui.save({"paper_krw": "2,000,000"})[0] == 200  # other settings: saved, applied on restart
+
+
+def test_keys_file_is_private_from_the_first_byte(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ui.live, "running_mode", lambda: None)
+    (tmp_path / ".env.example").write_text("# 업비트 키\nUPBIT_ACCESS_KEY=\n")
+    assert ui.save({"UPBIT_ACCESS_KEY": "A" * 40})[0] == 200
+    text = (tmp_path / ".env").read_text()
+    assert text.startswith("# 업비트 키") and "A" * 40 in text  # setup comments kept
+    if os.name != "nt":
+        assert (tmp_path / ".env").stat().st_mode & 0o077 == 0

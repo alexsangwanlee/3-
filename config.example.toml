@@ -25,7 +25,7 @@ budget_krw = 0       # 실거래 필수: 봇에게 맡길 원화 (예: 1000000).
 # 근거: results/guard_ablation.md
 daily_target = 0
 daily_loss_limit = 0.05  # 하루 -5% 도달 → 전량 청산 후 그날 매매 중단 (0 = 끄기)
-max_drawdown = 0.35      # 최고점 대비 -35% → 전량 청산 후 봇 정지(수동 재시작 필요) (0 = 끄기)
+max_drawdown = 0.35      # 최고점 대비 -35% → 전량 청산 후 새 매수 중단 (해제: ./start.sh resume) (0 = 끄기)
 risk_per_trade = 0.01    # 손절 시 계좌의 최대 1% 손실이 되도록 포지션 크기 제한
 vol_reweight = true      # 변동성이 낮은 코인(BTC)에 더 많이, 높은 코인(DOGE·SOL)에 덜 배분
 lock_gain = 0.30         # 수익 지키기: 진입가 대비 +30% 이후에는 ...

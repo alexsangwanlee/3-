@@ -70,17 +70,23 @@ class UpbitClient:
         rows = self._request("GET", "/ticker", {"markets": ",".join(markets)})
         return {r["market"]: float(r["trade_price"]) for r in rows}
 
+    def markets(self) -> set[str]:
+        return {r["market"] for r in self._request("GET", "/market/all")}
+
     # -- private ---------------------------------------------------------
     def accounts(self) -> list[dict]:
         return self._request("GET", "/accounts", auth=True)
 
-    def buy_market(self, market: str, krw: float) -> dict:
-        return self._request("POST", "/orders", {"market": market, "side": "bid", "ord_type": "price",
-                                                 "price": str(int(krw))}, auth=True)
+    # `identifier` is ours and unique forever: an order whose reply was lost can still be looked up by it
+    def buy_market(self, market: str, krw: float, identifier: str | None = None, path: str = "/orders") -> dict:
+        return self._request("POST", path, {"market": market, "side": "bid", "ord_type": "price",
+                                            "price": str(int(krw)), **({"identifier": identifier} if identifier else {})},
+                             auth=True)
 
-    def sell_market(self, market: str, volume: float) -> dict:
+    def sell_market(self, market: str, volume: float, identifier: str | None = None) -> dict:
         return self._request("POST", "/orders", {"market": market, "side": "ask", "ord_type": "market",
-                                                 "volume": f"{math.floor(volume * 1e8) / 1e8:.8f}"}, auth=True)
+                                                 "volume": f"{math.floor(volume * 1e8) / 1e8:.8f}",
+                                                 **({"identifier": identifier} if identifier else {})}, auth=True)
 
-    def order(self, order_uuid: str) -> dict:
-        return self._request("GET", "/order", {"uuid": order_uuid}, auth=True)
+    def order(self, uuid: str | None = None, identifier: str | None = None) -> dict:
+        return self._request("GET", "/order", {"uuid": uuid} if uuid else {"identifier": identifier}, auth=True)

@@ -7,6 +7,7 @@ import os
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,21 +48,36 @@ def _alive(pid: int) -> bool:
 
 def running_pid() -> int | None:
     try:
-        pid = int(PID_FILE.read_text())
-    except (OSError, ValueError):
+        pid = int(PID_FILE.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
         return None
-    return pid if _alive(pid) else None
+    return pid if pid != os.getpid() and _alive(pid) else None  # Docker: a restarted container is PID 1 again
+
+
+def running_mode() -> str | None:
+    """"paper" / "live" of the bot that is running now (state/bot.pid holds "<pid> <mode>")."""
+    return PID_FILE.read_text().split()[1] if running_pid() else None
+
+
+def send_telegram(text: str) -> bool:
+    """Telegram message when TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set. Never raises. True if delivered."""
+    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    if not (token and chat):
+        return False
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": text},
+                          timeout=10)
+        if r.ok:
+            return True
+        log.warning("telegram notify failed: HTTP %s", r.status_code)
+    except Exception:
+        log.warning("telegram notify failed")  # no exception text: it contains the URL, i.e. the token
+    return False
 
 
 def notify(text: str) -> None:
-    """Telegram message when TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set. Never raises."""
-    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
-    if not (token and chat):
-        return
-    try:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": text}, timeout=10)
-    except Exception:
-        log.warning("telegram notify failed")  # no exception text: it contains the URL, i.e. the token
+    """Fire and forget, so a slow Telegram never delays a stop-loss."""
+    threading.Thread(target=send_telegram, args=(text,), daemon=True).start()
 
 
 class PaperBroker:
@@ -76,14 +92,17 @@ class PaperBroker:
     def holdings(self) -> dict[str, float]:
         return {m: q for m, q in self.held.items() if q > 0}
 
-    def buy(self, market: str, krw: float, price: float) -> tuple[float, float]:
+    def buy(self, market: str, krw: float, price: float, ident: str) -> tuple[float, float]:
         fill = price * (1 + self.costs.slippage)
         self.held[market] = self.held.get(market, 0.0) + krw / fill
         return krw / fill, fill
 
-    def sell(self, market: str, qty: float, price: float) -> float:
+    def sell(self, market: str, qty: float, price: float, ident: str) -> tuple[float, float]:
         self.held[market] = max(0.0, self.held.get(market, 0.0) - qty)
-        return price * (1 - self.costs.slippage)
+        return qty, price * (1 - self.costs.slippage)
+
+    def resolve(self, ident: str) -> None:
+        return None  # a paper order interrupted by a crash never happened
 
 
 class UpbitBroker:
@@ -99,21 +118,31 @@ class UpbitBroker:
         return {f"KRW-{a['currency']}": float(a["balance"]) for a in self.client.accounts()
                 if a["currency"] != "KRW" and float(a["balance"]) > 0}
 
-    def _filled(self, order_uuid: str) -> tuple[float, float]:
+    def _filled(self, **query) -> tuple[float, float]:
+        """(executed volume, average price) once the order is closed."""
         for _ in range(20):
-            o = self.client.order(order_uuid)
+            o = self.client.order(**query)
             if o["state"] in ("done", "cancel"):
                 vol = sum(float(t["volume"]) for t in o.get("trades", []))
                 funds = sum(float(t["funds"]) for t in o.get("trades", []))
                 return vol, (funds / vol if vol else 0.0)
             time.sleep(0.5)
-        raise RuntimeError(f"order {order_uuid} not filled")
+        raise RuntimeError(f"order {query} not settled yet")
 
-    def buy(self, market: str, krw: float, price: float) -> tuple[float, float]:
-        return self._filled(self.client.buy_market(market, krw)["uuid"])
+    def buy(self, market: str, krw: float, price: float, ident: str) -> tuple[float, float]:
+        return self._filled(uuid=self.client.buy_market(market, krw, ident)["uuid"])
 
-    def sell(self, market: str, qty: float, price: float) -> float:
-        return self._filled(self.client.sell_market(market, qty)["uuid"])[1] or price
+    def sell(self, market: str, qty: float, price: float, ident: str) -> tuple[float, float]:
+        return self._filled(uuid=self.client.sell_market(market, qty, ident)["uuid"])
+
+    def resolve(self, ident: str) -> tuple[float, float] | None:
+        """Outcome of an order whose reply was lost. None: it never reached the exchange."""
+        try:
+            return self._filled(identifier=ident)
+        except RuntimeError as e:
+            if "order_not_found" in str(e):
+                return None
+            raise
 
 
 @dataclass
@@ -149,15 +178,17 @@ class Bot:
                                    "max_drawdown": cfg.risk.max_drawdown})
         self.candles: dict[str, pd.DataFrame] = {}
         self.last_refresh = 0.0
+        self.last_bar = None
         self._fund(funding)
 
     # -- persistence -----------------------------------------------------
     def _load_state(self) -> dict:
         p = Path(self.cfg.state_path)
-        if p.exists():
-            return json.loads(p.read_text())
-        return {"cash": 0.0, "funded": 0.0, "positions": {}, "last_entry_day": {}, "last_enter_bar": {},
-                "guard": None, "paper_holdings": {}}
+        state = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {
+            "cash": 0.0, "funded": 0.0, "positions": {}, "last_entry_day": {}, "last_enter_bar": {}, "guard": None,
+            "paper_holdings": {}}
+        state.setdefault("pending", {})  # orders sent but not yet booked: {identifier: order}
+        return state
 
     def _fund(self, target: float) -> None:
         """budget_krw changed since the last start: move the difference into or out of the ledger."""
@@ -176,40 +207,76 @@ class Bot:
         self.state["guard"] = self.guard.to_dict()
         p = Path(self.cfg.state_path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.state, indent=2, default=str))
+        tmp = p.with_suffix(".tmp")  # a crash mid-write must never leave a half ledger
+        tmp.write_text(json.dumps(self.state, indent=2, default=str), encoding="utf-8")
+        os.replace(tmp, p)
 
     def _log_trade(self, **row) -> None:
         self._append(self.cfg.trades_path, **row)
 
     @staticmethod
     def _append(path: str, **row) -> None:
+        """Add a CSV row. A log file open in Excel (locked on Windows) never stops trading."""
         p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        new = not p.exists()
-        with p.open("a", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(row))
-            if new:
-                w.writeheader()
-            w.writerow(row)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if p.exists():
+                with p.open(encoding="utf-8") as f:
+                    header = f.readline().strip().split(",")
+                if header != list(row):  # columns changed in an update: keep old rows, rewrite the header
+                    old = pd.read_csv(p, on_bad_lines="skip")
+                    old.reindex(columns=list(dict.fromkeys([*row, *old.columns]))).to_csv(p, index=False)
+                    row = {k: row.get(k, "") for k in pd.read_csv(p, nrows=0).columns}
+            new = not p.exists()
+            with p.open("a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(row))
+                if new:
+                    w.writeheader()
+                w.writerow(row)
+        except OSError as e:
+            log.warning("could not write %s: %s", path, e)
 
     # -- market data -----------------------------------------------------
     def _refresh_candles(self, now: float) -> None:
         if now - self.last_refresh < 60 and self.candles:
             return
         for m in self.cfg.markets:
-            if m in self.candles:  # only the newest page is needed after the first load
-                df = pd.concat([self.candles[m], to_frame(self.client.candles(m, self.cfg.timeframe, count=200))])
-                self.candles[m] = df[~df.index.duplicated(keep="last")].iloc[-self.cfg.history_bars:]
-                continue
-            rows, to = [], None
-            while len(rows) < self.cfg.history_bars:
-                page = self.client.candles(m, self.cfg.timeframe, to=to, count=200)
-                if not page:
-                    break
-                rows += page
-                to = page[-1]["candle_date_time_utc"] + "Z"
-            self.candles[m] = to_frame(rows)
+            try:
+                self._load_candles(m)
+            except Exception as e:  # that market gets no new entries until it answers again
+                log.warning("%s: candles unavailable (%s)", m, type(e).__name__)
         self.last_refresh = now
+
+    def _load_candles(self, m: str) -> None:
+        if m in self.candles:  # only the newest page is needed after the first load
+            df = pd.concat([self.candles[m], to_frame(self.client.candles(m, self.cfg.timeframe, count=200))])
+            self.candles[m] = df[~df.index.duplicated(keep="last")].iloc[-self.cfg.history_bars:]
+            return
+        rows, to = [], None
+        while len(rows) < self.cfg.history_bars:
+            page = self.client.candles(m, self.cfg.timeframe, to=to, count=200)
+            if not page:
+                break
+            rows += page
+            to = page[-1]["candle_date_time_utc"] + "Z"
+        self.candles[m] = to_frame(rows)
+
+    def _prices(self) -> dict[str, float]:
+        """Tickers for the configured markets and every open position. One bad market never hides the rest."""
+        markets = list(dict.fromkeys([*self.cfg.markets, *self.state["positions"]]))
+        try:
+            prices = self.client.tickers(markets)
+        except Exception:
+            prices = {}
+            for m in markets:
+                try:
+                    prices.update(self.client.tickers([m]))
+                except Exception as e:
+                    log.warning("%s: no price (%s)", m, type(e).__name__)
+        for m, pos in self.state["positions"].items():
+            if m in prices:
+                pos["last"] = prices[m]
+        return prices
 
     def _signal_row(self, market: str, bar: pd.Timestamp, price: float) -> pd.Series:
         df = self.candles[market]
@@ -220,48 +287,107 @@ class Bot:
         return prepared.iloc[-1]
 
     # -- trading ---------------------------------------------------------
+    def _order(self, side: str, market: str, amount: float, price: float, **meta) -> None:
+        """Saved before it is sent, so a lost reply or a crash can never book it twice or lose it."""
+        ident = f"tradebot-{uuid.uuid4().hex}"
+        self.state["pending"][ident] = {"side": side, "market": market, "price": price, **meta}
+        self.save()
+        vol, fill = (self.broker.buy if side == "buy" else self.broker.sell)(market, amount, price, ident)
+        self._book(self.state["pending"].pop(ident), vol, fill)
+
+    def _resolve_pending(self) -> None:
+        """Book orders whose outcome was unknown. Unanswered ones stay pending and block their market."""
+        for ident, order in list(self.state["pending"].items()):
+            try:
+                got = self.broker.resolve(ident)
+            except Exception as e:
+                log.warning("%s: order %s still unconfirmed (%s)", order["market"], ident, type(e).__name__)
+                continue
+            del self.state["pending"][ident]
+            if got:
+                self._book(order, *got)
+            self.save()
+
+    def _busy(self, market: str) -> bool:
+        """An order in this market has no confirmed outcome yet: never send another one."""
+        return any(o["market"] == market for o in self.state["pending"].values())
+
+    def _book(self, order: dict, vol: float, fill: float) -> None:
+        """Record what really executed (a partial or empty fill books only that)."""
+        m, fee, positions = order["market"], self.cfg.costs.fee, self.state["positions"]
+        t = pd.Timestamp.now(tz="UTC").isoformat()
+        if vol <= 0:
+            log.warning("%s: %s order executed nothing; will retry if still needed", m, order["side"])
+            self.save()
+            return
+        if order["side"] == "buy":
+            self.state["cash"] -= vol * fill * (1 + fee)
+            old = positions.get(m, {"qty": 0.0, "entry": fill})  # a leftover too small to sell joins the new one
+            qty = old["qty"] + vol
+            stop = fill - order["stop_dist"] if math.isfinite(order["stop_dist"]) else None
+            positions[m] = {"qty": qty, "entry": (old["qty"] * old["entry"] + vol * fill) / qty, "stop": stop,
+                            "high": fill, "last": fill, "entry_time": t}
+            self.save()
+            log.info("BUY  %s qty=%.8f @ %.4f (%s) stop=%s", m, vol, fill, order["reason"], stop)
+            notify(f"[tradebot] 매수 {m} {vol * fill:,.0f}원 @ {fill:,.0f}" + (f", 손절가 {stop:,.0f}" if stop else ""))
+            self._log_trade(time=t, strategy=self.cfg.strategy, market=m, side="buy", qty=vol, price=fill,
+                            reason=order["reason"], pnl="", slip=round(fill / order["price"] - 1, 6))
+            return
+        self.state["cash"] += vol * fill * (1 - fee)
+        pos = positions.get(m)
+        if pos:
+            pos["qty"] -= vol
+            if pos["qty"] * fill < 1:  # ponytail: under 1 KRW left counts as fully sold
+                del positions[m]
+        self.save()
+        pnl = fill * (1 - fee) / (order["entry"] * (1 + fee)) - 1
+        log.info("SELL %s qty=%.8f @ %.4f (%s) pnl=%.2f%%", m, vol, fill, order["reason"], pnl * 100)
+        notify(f"[tradebot] 매도 {m} @ {fill:,.0f} ({order['reason']}) 손익 {pnl:+.2%}")
+        self._log_trade(time=t, strategy=self.cfg.strategy, market=m, side="sell", qty=vol, price=fill,
+                        reason=order["reason"], pnl=round(pnl, 6),
+                        slip=round(1 - fill / order["price"], 6))  # vs the price the decision saw: learned by optimize
+
     def _sell(self, market: str, price: float, reason: str) -> None:
         pos = self.state["positions"][market]
-        # never sell more than the bot bought (the account may hold the same coin outside the bot)
+        # never sell more than the bot bought (the account may hold the same coin outside the bot),
+        # nor more than the account still has (coins sold by hand leave the books too)
         qty = min(pos["qty"], self.broker.holdings().get(market, 0.0))
-        if qty * price < MIN_ORDER_KRW:
-            log.warning("%s: %.8f left is below the minimum order, dropping position", market, qty)
-            del self.state["positions"][market]
-            return
-        fill = self.broker.sell(market, qty, price)
-        self.state["cash"] += qty * fill * (1 - self.cfg.costs.fee)
-        del self.state["positions"][market]
-        self.save()
-        pnl = fill * (1 - self.cfg.costs.fee) / (pos["entry"] * (1 + self.cfg.costs.fee)) - 1
-        log.info("SELL %s qty=%.8f @ %.4f (%s) pnl=%.2f%%", market, qty, fill, reason, pnl * 100)
-        notify(f"[tradebot] 매도 {market} @ {fill:,.0f} ({reason}) 손익 {pnl:+.2%}")
-        self._log_trade(time=pd.Timestamp.now(tz="UTC").isoformat(), strategy=self.cfg.strategy, market=market,
-                        side="sell", qty=qty, price=fill, reason=reason, pnl=round(pnl, 6))
-
-    def _buy(self, market: str, krw: float, price: float, stop_dist: float, reason: str) -> None:
-        qty, fill = self.broker.buy(market, krw, price)
         if qty <= 0:
-            return
-        self.state["cash"] -= qty * fill * (1 + self.cfg.costs.fee)
-        stop = fill - stop_dist if math.isfinite(stop_dist) else None
-        self.state["positions"][market] = {"qty": qty, "entry": fill, "stop": stop, "high": fill,
-                                           "entry_time": pd.Timestamp.now(tz="UTC").isoformat()}
-        self.save()
-        log.info("BUY  %s %.0f KRW qty=%.8f @ %.4f (%s) stop=%s", market, krw, qty, fill, reason, stop)
-        notify(f"[tradebot] 매수 {market} {krw:,.0f}원 @ {fill:,.0f}" + (f", 손절가 {stop:,.0f}" if stop else ""))
-        self._log_trade(time=pd.Timestamp.now(tz="UTC").isoformat(), strategy=self.cfg.strategy, market=market,
-                        side="buy", qty=qty, price=fill, reason=reason, pnl="")
+            log.warning("%s: the account no longer holds this position; removing it from the books", market)
+            del self.state["positions"][market]
+        elif qty * price < MIN_ORDER_KRW:  # Upbit refuses it: keep it on the books, the next buy absorbs it
+            if not pos.get("dust"):
+                log.warning("%s: %.8f left is below Upbit's minimum order; kept until the next buy", market, qty)
+            pos.update(qty=qty, dust=True)
+        else:
+            self._order("sell", market, qty, price, reason=reason, entry=pos["entry"])
 
     def equity(self, prices: dict[str, float]) -> float:
-        return self.state["cash"] + sum(p["qty"] * prices[m] for m, p in self.state["positions"].items())
+        return self.state["cash"] + sum(p["qty"] * prices.get(m, p.get("last", p["entry"]))
+                                        for m, p in self.state["positions"].items())
 
     def _cash(self, prices: dict[str, float]) -> float:
         return max(0.0, min(self.state["cash"], self.broker.available_krw()))
 
     def step(self, now: pd.Timestamp | None = None) -> None:
+        """One pass: book unconfirmed orders, exits and stops, entries, the daily guard. A failure in one
+        market is logged and the others still run; the first failure is re-raised at the end."""
         now = now or pd.Timestamp.now(tz="UTC")
+        errors = []
+
+        def attempt(fn, *args, **kw) -> bool:
+            try:
+                fn(*args, **kw)
+                return True
+            except Exception as e:
+                log.warning("%s %s failed: %s", fn.__name__, args[:2], type(e).__name__)
+                errors.append(e)
+                return False
+
+        self._resolve_pending()
         self._refresh_candles(now.timestamp())
-        prices = self.client.tickers(self.cfg.markets)
+        prices = self._prices()
+        positions = self.state["positions"]
         bar = now.floor(f"{self.cfg.timeframe}min")
         day = str(now.date())
         self.guard.on_day(day, self.equity(prices))
@@ -269,28 +395,39 @@ class Bot:
             self._append(self.cfg.equity_path, date=day, strategy=self.cfg.strategy,
                          equity=round(self.equity(prices), 2), funded=self.state["funded"])
             self.state["logged_day"] = day
-        rows = {m: self._signal_row(m, bar, prices[m]) for m in self.cfg.markets}
-        positions = self.state["positions"]
+        rows = {}
+        for m in self.cfg.markets:
+            if m in prices and m in self.candles:
+                try:
+                    rows[m] = self._signal_row(m, bar, prices[m])
+                except Exception as e:
+                    log.warning("%s: no signal (%s)", m, type(e).__name__)
 
-        for m in list(positions):
-            row, pos = rows[m], positions[m]
-            if row["exit"] and pd.Timestamp(pos["entry_time"]) < bar:
-                self._sell(m, prices[m], "exit")
+        def sellable(m):
+            return m in prices and not self._busy(m) and not positions[m].get("dust")
+
+        for m in [m for m in positions if sellable(m)]:
+            row, pos = rows.get(m), positions[m]
+            if row is not None and row["exit"] and pd.Timestamp(pos["entry_time"]) < bar:
+                attempt(self._sell, m, prices[m], "exit")
             elif pos["stop"] is not None and prices[m] <= pos["stop"]:
-                self._sell(m, prices[m], "stop")
+                attempt(self._sell, m, prices[m], "stop")
         risk = self.cfg.risk
         for m, pos in positions.items():  # giveback guard, after the stop check like the backtester
+            if m not in prices:
+                continue
             pos["high"] = max(pos.get("high", pos["entry"]), prices[m])
-            if risk.lock_gain and pos["high"] >= pos["entry"] * (1 + risk.lock_gain):
+            if risk.lock_gain and risk.lock_giveback and pos["high"] >= pos["entry"] * (1 + risk.lock_gain):
                 pos["stop"] = max(pos["stop"] or 0.0, pos["high"] * (1 - risk.lock_giveback))
 
-        if self.guard.can_trade and self.cfg.allow_entries:
+        if self.guard.can_trade and self.cfg.allow_entries and not self.state.get("flatten"):
             eq = self.equity(prices)
             alloc = self.cfg.risk.alloc_per_market or 1.0 / len(self.cfg.markets)
-            weight = dict(zip(self.cfg.markets, inverse_vol_weights([rows[m]["vol"] for m in self.cfg.markets])
+            vols = [rows[m]["vol"] if m in rows else math.nan for m in self.cfg.markets]
+            weight = dict(zip(self.cfg.markets, inverse_vol_weights(vols)
                               if self.cfg.risk.vol_reweight else [1.0] * len(self.cfg.markets)))
             for m in self.cfg.markets:
-                if m in positions:
+                if m not in rows or self._busy(m) or (m in positions and not positions[m].get("dust")):
                     continue
                 row, price = rows[m], prices[m]
                 if row["enter"] and self.state["last_enter_bar"].get(m) != str(bar):
@@ -301,36 +438,53 @@ class Bot:
                     continue
                 krw = order_value(eq, self._cash(prices), alloc, row["size"] * weight[m], row["stop_dist"], price,
                                   self.cfg.risk.risk_per_trade, self.cfg.costs.fee)
-                self.state["last_enter_bar"][m] = str(bar)
-                self.state["last_entry_day"][m] = day
-                if krw < MIN_ORDER_KRW:
-                    continue
-                self._buy(m, krw, price, row["stop_dist"], reason)
+                # a buy that failed before reaching the exchange is retried on the next poll
+                if krw < MIN_ORDER_KRW or attempt(self._order, "buy", m, krw, price,
+                                                  stop_dist=float(row["stop_dist"]), reason=reason):
+                    self.state["last_enter_bar"][m] = str(bar)
+                    self.state["last_entry_day"][m] = day
 
         reason = self.guard.check(self.equity(prices))
         if reason:
             log.warning("risk guard: %s -> closing all positions", reason)
             notify(f"[tradebot] 리스크 가드 발동: {reason} -> 전량 청산"
-                   + (" (봇 정지, 확인 후 수동 재시작)" if reason == "max_drawdown" else " (내일까지 매매 중단)"))
-            for m in list(positions):
-                self._sell(m, prices[m], reason)
+                   + (" 후 신규 매수 중단. 원인 확인 후 정지하고 ./start.sh resume 으로 해제" if reason == "max_drawdown"
+                      else " 후 오늘은 신규 매수 중단"))
+            self.state["flatten"] = reason
+        if self.state.get("flatten"):  # kept until every position is gone, so a failed sell is retried
+            for m in [m for m in positions if sellable(m)]:
+                attempt(self._sell, m, prices[m], self.state["flatten"])
+            if all(p.get("dust") for p in positions.values()):
+                self.state.pop("flatten")
         self.save()
+        if bar != self.last_bar:  # a sign of life once per candle (trades can be days apart)
+            self.last_bar = bar
+            log.info("%s: 장부 %s원, 보유 %d개, 다음 봉까지 대기", self.cfg.strategy, f"{self.equity(prices):,.0f}",
+                     len(positions))
+        if errors:
+            raise errors[0]
 
 
-
-def run_bots(bots: list[Bot], seconds: float, poll_seconds: int) -> None:
-    """Step every sleeve each poll for `seconds`. One sleeve failing never stops the others."""
+def run_bots(bots: list[Bot], seconds: float, poll_seconds: int, done=lambda: False) -> None:
+    """Step every sleeve each poll for `seconds` (or until `done()`). One sleeve failing never stops the others."""
     for b in bots:
         log.info("sleeve %s: params=%s entries=%s", b.cfg.strategy, b.cfg.params, b.cfg.allow_entries)
     end, failing = time.time() + seconds, set()
-    while time.time() < end and not stop_requested():
+    while time.time() < end and not stop_requested() and not done():
         for b in bots:
             try:
                 b.step()
+                if b.cfg.strategy in failing:
+                    log.info("%s: 다시 정상입니다", b.cfg.strategy)
                 failing.discard(b.cfg.strategy)
-            except Exception:  # keep running through network hiccups
+            except Exception as e:  # keep running through network hiccups
+                if b.cfg.strategy in failing:  # one traceback per outage, not one every poll
+                    log.warning("%s: 아직 실패 중, 재시도 (%s)", b.cfg.strategy, type(e).__name__)
+                    continue
                 log.exception("%s: step failed", b.cfg.strategy)
-                if b.cfg.strategy not in failing:
-                    notify(f"[tradebot] {b.cfg.strategy} 오류, 재시도 중 (logs/bot.log 확인)")
+                notify(f"[tradebot] {b.cfg.strategy} 오류, 재시도 중 (logs/bot.log 확인)")
                 failing.add(b.cfg.strategy)
-        STOP.wait(poll_seconds)
+        for _ in range(int(poll_seconds)):  # 1 s slices: the panel's stop button is noticed within a second
+            if stop_requested() or done():
+                break
+            STOP.wait(1)

@@ -67,9 +67,9 @@ def test_live_sell_never_touches_coins_the_bot_did_not_buy(bot):
         def holdings(self):
             return {"KRW-BTC": 1.01}
 
-        def sell(self, market, qty, price):
+        def sell(self, market, qty, price, ident):
             AccountBroker.sold = qty
-            return price
+            return qty, price
 
     bot.broker = AccountBroker()
     bot.state["positions"]["KRW-BTC"] = {"qty": 0.01, "entry": 100.0, "stop": None, "entry_time": "2024-01-01"}
@@ -89,13 +89,13 @@ class RichAccount:
     def holdings(self):
         return self.held
 
-    def buy(self, market, krw, price):
+    def buy(self, market, krw, price, ident):
         self.held[market] = krw / price
         return krw / price, price
 
-    def sell(self, market, qty, price):
+    def sell(self, market, qty, price, ident):
         self.held[market] = 0.0
-        return price
+        return qty, price
 
 
 def test_bot_spends_only_its_own_ledger_even_if_the_account_holds_more(bot):
@@ -172,3 +172,12 @@ def test_each_day_is_logged_once_per_sleeve(bot):
         bot.step(t)
     logged = pd.read_csv(bot.cfg.equity_path)
     assert len(logged) == 2 and set(logged.columns) == {"date", "strategy", "equity", "funded"}
+
+
+def test_trade_log_from_an_older_version_gains_the_new_column(tmp_path):
+    p = tmp_path / "trades.csv"
+    p.write_text("time,market,side\n2026-01-01,KRW-BTC,buy\n")
+    Bot._append(str(p), time="2026-01-02", market="KRW-ETH", side="sell", slip=0.001)
+    rows = pd.read_csv(p)
+    assert list(rows.columns) == ["time", "market", "side", "slip"] and len(rows) == 2
+    assert rows["slip"].iloc[1] == 0.001

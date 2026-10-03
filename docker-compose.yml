@@ -1,13 +1,23 @@
 # 24시간 실행: docker compose up -d     로그: docker compose logs -f     정지: docker compose down
 # mode(모의/실거래)는 config.toml 에서 정합니다. 키는 .env 에서 읽고 이미지에는 넣지 않습니다.
+# 설정이나 .env 를 바꾼 뒤에는 restart 가 아니라 `docker compose up -d` 로 다시 띄우세요.
 services:
   tradebot:
     build: .
     restart: unless-stopped
-    env_file: .env
+    stop_grace_period: 30s  # the bot finishes its step and saves before exiting
+    env_file:
+      - path: .env
+        required: false
     volumes:
-      - ./config.toml:/app/config.toml:ro
+      - type: bind            # long form: a missing config.toml is an error, not a directory Docker makes
+        source: ./config.toml
+        target: /app/config.toml
+        read_only: true
       - ./data:/app/data
       - ./state:/app/state
       - ./logs:/app/logs
-      - ./results:/app/results
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

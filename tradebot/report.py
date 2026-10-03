@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import config
+
 PAPER_DAYS = 28  # Phase 0: paper trading before any real money
 GROW_DAYS = 90   # live: earliest budget increase after the last change, and at most 2x
 
@@ -47,21 +49,38 @@ def plan_status(log: pd.DataFrame, bands: dict, mode: str) -> list[str]:
 
     if mode == "paper":
         lines.append(f"Phase 0 모의매매 {days}/{PAPER_DAYS}일" if days < PAPER_DAYS else
-                     "Phase 1 진행 가능: config.toml 에서 mode = \"live\", budget_krw 를 목표 금액의 10~20%로"
+                     "Phase 1 진행 가능: 설정에서 실거래로 바꾸고, 실거래 금액을 목표 금액의 10~20%로"
                      if not warn else "모의매매 계속: 점검 항목을 먼저 해결하세요")
     else:
         _, funded = _sums(log)
         changed = funded.diff().fillna(0) != 0
         since = days - (int(changed.to_numpy().nonzero()[0][-1]) if changed.any() else 0)
-        lines.append("증액 가능: 지난 90일이 정상 범위 → budget_krw 를 최대 2배까지 (목표 금액 이내)"
+        lines.append("증액 가능: 지난 90일이 정상 범위 → 실거래 금액을 최대 2배까지 (목표 금액 이내)"
                      if since >= GROW_DAYS and not warn else f"현재 예산 유지 ({min(since, GROW_DAYS)}/{GROW_DAYS}일)")
     if len(r) and total > 0 and curve.iloc[-1] >= curve.max():
-        lines.append("신고점: 이번 분기 수익의 30~50% 출금 권장 (budget_krw 를 그만큼 낮추고 업비트에서 출금)")
+        lines.append("신고점: 이번 분기 수익의 30~50% 출금 권장 (실거래 금액을 그만큼 낮추고 업비트에서 출금)")
+    return lines
+
+
+def learning(sel: dict | None = None) -> list[str]:
+    """What the weekly self-review learned: real costs and a gated strategy recommendation."""
+    sel = config.selection() if sel is None else sel
+    lines = []
+    rev = sel.get("self_review") or {}
+    if rev.get("recommend"):
+        cand = next(c for c in rev["candidates"] if c["strategies"] == rev["recommend"])
+        base = rev["baseline"]
+        lines.append(f"자가 점검 추천: 전략을 {' + '.join(rev['recommend'])}(으)로 바꾸면 더 꾸준했습니다 "
+                     f"(과거 샤프 {base['sharpe']} → {cand['sharpe']}, 최근 180일 {base['recent']:+.1%} → {cand['recent']:+.1%}). "
+                     "제어판에서 승인하면 적용됩니다.")
+    costs = sel.get("costs_used") or {}
+    if costs.get("slippage", 0) > 0.0005:
+        lines.append(f"실제 체결에서 배운 슬리피지 {costs['slippage']:.2%}를 전략 평가에 반영 중입니다.")
     return lines
 
 
 def report(mode: str, equity_path: str, bands_path: str = "results/bands.json") -> list[str]:
     p = Path(equity_path)
     if not p.exists():
-        return ["아직 기록이 없습니다. 봇을 하루 이상 돌린 뒤 다시 보세요."]
-    return plan_status(pd.read_csv(p), json.loads(Path(bands_path).read_text()), mode)
+        return ["아직 기록이 없습니다. 봇을 하루 이상 돌린 뒤 다시 보세요.", *learning()]
+    return plan_status(pd.read_csv(p), json.loads(Path(bands_path).read_text(encoding="utf-8")), mode) + learning()

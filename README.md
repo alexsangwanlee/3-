@@ -3,49 +3,53 @@
 업비트 원화마켓 현물 자동매매 봇입니다. 5년치 실제 데이터(4시간봉)에서 walk-forward 방식으로 전략과 파라미터를 고르고,
 **API 키와 설정만 넣으면** 모의매매나 실거래로 24시간 돌아갑니다.
 
-## 바로 실행하기 (3단계)
+## 바로 실행하기
 
-**1. 설치하고 모의매매로 켜기** (키 없이도 됩니다)
+**0. 준비** (처음 한 번)
 
-```bash
-./start.sh          # Mac/Linux
-start.bat           # Windows
-```
+- Python 3.11 이상을 설치합니다: https://www.python.org/downloads/
+  - Windows: 설치 첫 화면에서 **"Add python.exe to PATH"를 꼭 체크**하세요.
+  - Mac: 기본으로 들어 있는 Python(3.9)은 안 됩니다. 위 링크에서 새로 설치하세요.
+- 이 저장소를 받습니다. GitHub의 **Code → Download ZIP**으로 받아 압축을 풀거나, `git clone`을 씁니다.
 
-처음 실행하면 가상환경을 만들고, `config.toml`·`.env` 파일을 만들고, 설정을 점검한 뒤 모의매매를 시작합니다.
-데이터 갱신과 전략 재선정은 일주일마다 자동으로 합니다.
+**1. 제어판 열기**
 
-**2. 업비트 API 키 넣기** (실거래를 할 때만)
+- Windows: 폴더에서 `start.bat`을 더블클릭합니다.
+- Mac/Linux: 터미널에서 그 폴더로 이동해(`cd 폴더경로`) `./start.sh`를 실행합니다. Mac에서는 `.sh`를 더블클릭해도 실행되지 않습니다.
+
+처음에는 필요한 프로그램을 설치하느라 1~2분 걸리고, 브라우저에 제어판이 열립니다.
+**모의매매 시작**을 누르면 실제 돈 없이 바로 돌아갑니다. 제어판 창을 닫아도 봇은 계속 돕니다.
+
+**2. 실거래로 바꾸기** (모의매매 28일 후, 제어판의 "이번 주 점검"이 "Phase 1 진행 가능"이라고 할 때)
 
 - 업비트 → 마이페이지 → Open API 관리에서 키를 발급합니다.
   - 권한은 **자산조회 · 주문조회 · 주문하기만** 켜세요. **출금 권한은 절대 켜지 마세요.**
   - 봇을 돌릴 PC·서버의 공인 IP를 등록하세요.
-- `.env` 파일에 붙여넣습니다. 이 파일은 git에 올라가지 않습니다.
-  ```
-  UPBIT_ACCESS_KEY=발급받은키
-  UPBIT_SECRET_KEY=발급받은키
-  TELEGRAM_BOT_TOKEN=     # 선택: 매수·매도·손절 알림
-  TELEGRAM_CHAT_ID=
-  ```
-- `config.toml`에서 `mode = "live"`로 바꾸고, `budget_krw`로 봇에게 맡길 금액을 정합니다(예: `1000000`).
-  봇은 이 금액을 자기 장부로 굴리고, 계좌의 다른 돈은 건드리지 않습니다.
+- 제어판의 **설정**에서 키를 붙여 넣고, 모드를 **실거래**로, 실거래 금액을 정한 뒤 저장합니다.
+  키는 이 PC의 `.env` 파일에만 저장되고 화면에 다시 보이지 않습니다. 봇은 맡긴 금액만 굴리고 계좌의 다른 돈은 건드리지 않습니다.
+- **연결 점검**을 누릅니다. 키·IP·주문 권한·잔고·텔레그램을 확인하고(실제 주문은 나가지 않습니다), 문제가 있으면 고치는 방법을 알려줍니다.
+- "실제 돈으로 매매합니다"를 체크하고 **실거래 시작**을 누릅니다.
 
-**3. 점검 후 실거래 시작**
+그다음은 [운영 계획](results/plan.md)대로 진행합니다. 제어판의 "이번 주 점검"(텔레그램으로도 매주 옵니다)이
+지금 단계, 정상 범위 여부, 증액·출금 시점을 알려줍니다. 실거래는 잃어도 되는 금액으로만 하세요.
+
+**24시간 서버에서 돌리기** (화면 없이)
 
 ```bash
-python -m tradebot check                     # 키·IP·권한·잔고·알림 점검. 문제가 있으면 해결 방법을 알려줍니다
-./start.sh --i-understand-the-risk           # Windows: start.bat --i-understand-the-risk
+./start.sh run                            # 모의매매. 실거래: ./start.sh run --i-understand-the-risk
 ```
 
-24시간 서버에서 돌리려면 Docker를 쓰세요(꺼져도 자동 재시작).
+Docker를 쓰면 꺼져도 자동으로 다시 켜집니다. 설정은 제어판에서 먼저 저장하거나 예제 파일을 복사해 편집하세요.
 
 ```bash
-cp config.example.toml config.toml && cp .env.example .env   # 먼저 만들고 편집
+cp -n config.example.toml config.toml; cp -n .env.example .env   # 이미 있으면 덮어쓰지 않습니다
 docker compose up -d && docker compose logs -f
 ```
 
-그다음은 [운영 계획](results/plan.md)대로 진행합니다. 매주 오는 리포트(`python -m tradebot report`)가
-지금 단계, 정상 범위 여부, 증액·출금 시점을 알려줍니다. 실거래는 잃어도 되는 금액으로만 하세요.
+- Docker는 mode와 상관없이 `--i-understand-the-risk`로 실행합니다. `config.toml`의 mode가 실거래면 바로 실거래입니다.
+- 점검(FAIL)이 계속 반복되면 `docker compose down`으로 멈추고 설정을 고친 뒤 `docker compose up -d` 하세요.
+  `.env`를 바꿨을 때도 `restart`가 아니라 `up -d`로 다시 띄워야 반영됩니다.
+- 같은 폴더에서 Docker와 `start.sh`를 번갈아 쓰지 마세요. Docker가 만든 파일은 root 소유라 `start.sh`가 쓰지 못합니다.
 
 ## 수익을 지속시키는 계획 (요약)
 
@@ -95,7 +99,8 @@ docker compose up -d && docker compose logs -f
 | rsi_mr (RSI-2 역추세) | -5.3% | -1.2% | -0.003% | -0.26 | -8.1% | 140 | 59% |
 | 단순 보유 (5개 균등) | +32.7% | +6.5% | +0.061% | 0.39 | -66.8% | – | – |
 
-`optimize`는 매주 최근 180일 기준으로 각 전략의 파라미터를 다시 고릅니다([`results/selected.json`](results/selected.json)).
+봇은 매주 최근 180일 기준으로 각 전략의 파라미터를 다시 고르고 `state/selected.json`에 저장합니다.
+[`results/selected.json`](results/selected.json)은 저장소에 함께 배포되는 시작값입니다.
 현재는 donchian `{"n": 96, "m": 12, "stop_atr": 3}`, ema_cross `{"fast": 12, "slow": 240, "stop_atr": 2}`입니다.
 승률은 25%뿐이지만, 손실은 작게 자르고 이익은 길게 가져가서 돈을 법니다.
 
@@ -174,16 +179,43 @@ docker compose up -d && docker compose logs -f
   가장 쉽게 따라 할 습관은 **신고점마다 수익 일부를 출금**하는 것입니다.
 - 공개 조건에 따라 **이 데이터로 만든 봇이나 상품은 판매하면 안 됩니다.** 원본 데이터는 저장소에 넣지 않았습니다.
 
+## 스스로 배우고 고치는 부분
+
+봇은 매주 스스로 다시 배웁니다. 다만 과거에 맞춰 잡음을 배우는 것(과최적화)이 자동매매에서 가장 흔한 실패라서,
+**바꾸기 전에 반드시 "고르는 데 쓰지 않은 기간"에서 확인**하고, 전략 구성 변경은 사용자가 승인해야 적용됩니다.
+
+| 무엇을 | 어떻게 | 언제 바뀌나 |
+|---|---|---|
+| 파라미터 | 데이터를 새로 받고 walk-forward로 각 전략의 파라미터를 다시 고릅니다 | 매주 자동. 그동안 매매는 계속합니다 |
+| 전략 쉬기 | 최근 성과가 나빠진 전략은 새 매수를 멈추고 보유분만 관리합니다 | 매주 자동 |
+| 실제 비용 | 실거래 체결가와 주문 시점 가격의 차이(슬리피지)를 기록합니다. 20건이 넘으면 그 중앙값으로 전략을 평가합니다 (가정보다 나쁠 때만) | 매주 자동 |
+| 전략 구성 | 전략을 하나 더하거나 빼는 경우를 모두 채점합니다. 오래된 기간에서 샤프가 0.15 이상 높고 수익 분기 비율이 같거나 높으며, **최근 180일(고르는 데 안 쓴 기간)에서도 지지 않을 때만** 추천합니다 | 제어판에 "추천대로 전략 바꾸기" 버튼이 뜨고, 누를 때만 |
+
+**시험했지만 넣지 않은 것: AI 진입 필터(메타 라벨링).** 과거 매매의 승패를 로지스틱 회귀로 학습해서, 질 것 같은 진입 30%를 건너뛰는 방식입니다.
+미리 정한 세 기준(샤프 개선, 앞·뒤 절반 모두 개선, 예측력 AUC > 0.55)을 모두 통과하지 못해 기각했습니다.
+샤프는 1.33 → 1.27로 떨어졌고 AUC는 0.545였습니다. 승률 15%인 ema_cross에서 +90% 거래 하나를 건너뛴 손해가,
+작은 손실 여러 건을 피한 이득보다 컸습니다([`results/metalabel.md`](results/metalabel.md)).
+
+## 비상 정지(-35%)를 풀려면
+
+전략 장부가 고점 대비 -35%가 되면 그 전략은 전량 청산하고 새 매수를 멈춥니다. 다시 켜도 풀리지 않습니다.
+원인을 확인한 뒤(시장 전체 폭락인지, 설정 실수인지) 봇을 정지하고 `./start.sh resume`(Windows: `start.bat resume`)을 실행하세요.
+그 시점의 장부를 새 고점으로 삼아 다시 매매합니다.
+
 ## 명령어
 
+`./start.sh 명령`(Windows: `start.bat 명령`)으로 실행하면 필요한 프로그램이 준비된 상태에서 돌아갑니다.
+
 ```bash
-python -m tradebot check      # 설정·키·알림 점검
-python -m tradebot report     # 운영 계획 대비 현재 상태: 단계, 정상 범위 여부, 증액·출금 시점
-python -m tradebot run        # 봇 실행 (config.toml 의 mode 에 따라 모의/실거래, 매주 자동 재최적화)
-python -m tradebot fetch      # 업비트 4시간봉 5년치 다운로드
-python -m tradebot optimize   # 4개 전략 walk-forward → results/ 갱신
-python -m tradebot backtest --strategy donchian --params '{"n": 96, "m": 12, "stop_atr": 3}'
-python -m pytest              # 테스트
+./start.sh                # 제어판 (브라우저)
+./start.sh check          # 설정·키·주문 권한·알림 점검
+./start.sh report         # 운영 계획 대비 현재 상태: 단계, 정상 범위 여부, 증액·출금 시점
+./start.sh run            # 화면 없이 봇 실행 (모의/실거래는 config.toml 의 mode, 매주 자동 재최적화)
+./start.sh resume         # 비상 정지(-35%) 해제
+./start.sh fetch          # 업비트 4시간봉 5년치 다운로드
+./start.sh optimize       # 4개 전략 walk-forward + 자가 점검 → state/selected.json
+./start.sh backtest --strategy donchian --params '{"n": 96, "m": 12, "stop_atr": 3}'
+.venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest   # 테스트
 ```
 
 ## 한계 (꼭 읽어주세요)
@@ -194,6 +226,8 @@ python -m pytest              # 테스트
   봇이 꺼져 있으면 손절도 안 됩니다.
 - 백테스트는 봉 안의 가격 순서를 모르기 때문에 보수적으로 가정했습니다(진입한 봉의 저가가 손절가 아래면 손절 처리).
 - 봇은 `budget_krw` 장부만 봅니다. 계좌에 다른 원화가 있어도 되지만, 장부보다 실제 원화가 적어지면 그만큼만 매수합니다.
+- 주문마다 고유 번호를 먼저 기록한 뒤 보냅니다. 응답이 끊기거나 봇이 꺼져도 다음 확인 때 업비트에 그 주문의 결과를 물어 장부에 반영하므로,
+  같은 주문을 두 번 넣지 않습니다. 실제로 체결된 수량만 장부에 적습니다.
 - 투자 판단과 손실의 책임은 사용자 본인에게 있습니다.
 
 ## 구조
@@ -206,13 +240,15 @@ tradebot/
   risk.py        포지션 크기, 변동성 가중, 일일 한도, 비상 정지 (백테스트·실거래 공용)
   backtest.py    포트폴리오 백테스트 엔진 + 성과 지표 (손절·수익 지키기 포함)
   optimize.py    walk-forward 최적화
-  live.py        모의/실거래 루프, 전략별 장부, 텔레그램 알림
+  live.py        모의/실거래 루프, 전략별 장부, 주문 확인, 텔레그램 알림
+  learn.py       자가 학습: 실제 슬리피지, 전략 구성 추천 (검증 통과 시에만)
   report.py      운영 계획 판정 (단계, 정상 범위, 증액·출금)
+  ui.py/ui.html  제어판 (127.0.0.1 전용, 키는 쓰기만 가능)
   config.py      config.toml / .env 읽기
-  __main__.py    CLI: check / report / run / fetch / optimize / backtest
+  __main__.py    CLI: ui / check / report / run / resume / fetch / optimize / backtest
 results/         운영 계획, 표본외 결과, 선택된 전략, 팀 실험, 예측과 변수(bands.json), 워뇨띠 분석
 scripts/         결과 재현용 (scenarios.py, wonyotti_study.py, guard_ablation.py)
-tests/           미래참조 방지, 체결 모델, 손절 규칙, 키 유출 방지, 모의매매 루프 테스트
+tests/           미래참조 방지, 체결 모델, 손절 규칙, 주문 장애(시간초과·부분체결·상장폐지), 키 유출 방지, 제어판 테스트
 start.sh / start.bat / Dockerfile / docker-compose.yml   바로 실행
 .claude/         Claude Code 플러그인과 스킬
 ```
@@ -223,6 +259,7 @@ start.sh / start.bat / Dockerfile / docker-compose.yml   바로 실행
   - `andrej-karpathy-skills`: 코딩 원칙 4가지
   - `oh-my-claudecode`: 여러 에이전트가 나눠서 일하는 팀 모드. 프롬프트마다 Node 훅이 실행됩니다
   - `ponytail`: 가장 단순한 해법 강제
-- `.claude/skills/`에는 `npx skills`(skills.sh)로 설치한 스킬 2개가 있습니다. 버전은 `skills-lock.json`에 고정되어 있습니다.
+- `.claude/skills/`에는 `npx skills`(skills.sh)로 설치한 스킬이 있습니다. 버전은 `skills-lock.json`에 고정되어 있습니다.
   - `tdd` (mattpocock/skills)
   - `security-and-hardening` (addyosmani/agent-skills)
+  - `frontend-design`, `web-design-guidelines`, `accessibility`: 제어판 디자인과 접근성 점검에 사용

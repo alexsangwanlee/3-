@@ -12,6 +12,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,14 +47,20 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
             else:
                 errors.append("모드는 모의매매(paper) 또는 실거래(live)만 고를 수 있습니다.")
         elif key in ("budget_krw", "paper_krw"):
+            v = _clean(value).replace(",", "")
+            if not v:
+                continue  # empty field = keep what is saved
             try:
-                n = float(_clean(value).replace(",", "") or 0)
+                n = float(v)
             except ValueError:
                 n = -1
-            if 0 <= n <= 1e12:
+            low = live.MIN_ORDER_KRW if key == "paper_krw" else 0
+            if low <= n <= 1e12 and (n == 0 or n >= live.MIN_ORDER_KRW):
                 out[key] = int(n)
             else:
-                errors.append("금액은 0 이상의 숫자로 적어 주세요 (예: 1000000).")
+                label = "모의매매 자금" if key == "paper_krw" else "실거래 금액"
+                errors.append(f"{label}은 {live.MIN_ORDER_KRW:,}원 이상의 숫자로 적어 주세요 (예: 1000000)."
+                              + ("" if low else " 실거래를 안 쓰면 0."))
         elif key == "markets":
             ms = [_clean(m).upper() for m in value if _clean(m)]
             if ms and all(re.fullmatch(r"KRW-[A-Z0-9]{2,10}", m) for m in ms):
@@ -140,6 +147,9 @@ def save(payload: dict) -> tuple[int, dict]:
     clean, errors = validate(payload)
     if errors:
         return 400, {"errors": errors}
+    running = live.running_mode()
+    if running and clean.get("mode", running) != running:
+        return 409, {"errors": ["봇이 돌고 있는 동안에는 모드를 바꿀 수 없습니다. 먼저 정지하세요."]}
     cfg = Path("config.toml")
     if not cfg.exists():
         if Path("config.example.toml").exists():
@@ -152,9 +162,12 @@ def save(payload: dict) -> tuple[int, dict]:
     keys = {k: v for k, v in clean.items() if k in SECRET_KEYS}
     if keys:
         e = Path(".env")
-        e.write_text(upsert_env(e.read_text(encoding="utf-8") if e.exists() else "", keys), encoding="utf-8")
+        old = next((p.read_text(encoding="utf-8") for p in (e, Path(".env.example")) if p.exists()), "")
+        fd = os.open(e, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, not even briefly
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(upsert_env(old, keys))
         if os.name != "nt":
-            e.chmod(0o600)
+            e.chmod(0o600)  # an older .env may have been created with looser permissions
     return 200, {"saved": True, "restart_needed": live.running_pid() is not None}
 
 
@@ -168,13 +181,15 @@ def _csv(path: str) -> pd.DataFrame:
 def status() -> dict:
     cfg = config.load()
     e = env()
-    mode = cfg.mode
+    running = live.running_mode()
+    mode = running or cfg.mode  # what is trading now, not what was saved for the next start
     sleeves, positions = [], []
-    for s in cfg.strategies:
-        p = Path(f"state/{mode}_{s}.json")
-        if p.exists():
-            st = json.loads(p.read_text())
-            sleeves.append({"strategy": s, "cash": st["cash"], "funded": st["funded"], "positions": st["positions"]})
+    for p in sorted(Path("state").glob(f"{mode}_*.json")):  # includes a removed strategy still holding coins
+        s = p.stem.removeprefix(f"{mode}_")
+        st = json.loads(p.read_text(encoding="utf-8"))
+        if s in STRATEGIES and (s in cfg.strategies or st["positions"]):
+            sleeves.append({"strategy": s, "cash": st["cash"], "funded": st["funded"], "positions": st["positions"],
+                            "halted": bool((st.get("guard") or {}).get("halted"))})
     held = sorted({m for s in sleeves for m in s["positions"]})
     try:
         from .upbit import UpbitClient
@@ -186,7 +201,7 @@ def status() -> dict:
         equity += s["cash"]
         funded += s["funded"]
         for m, pos in s["positions"].items():
-            px = prices.get(m, pos["entry"])
+            px = prices.get(m, pos.get("last", pos["entry"]))
             equity += pos["qty"] * px
             positions.append({"strategy": s["strategy"], "market": m, "value": pos["qty"] * px, "entry": pos["entry"],
                               "price": px, "pnl": px / pos["entry"] - 1, "stop": pos.get("stop")})
@@ -195,10 +210,12 @@ def status() -> dict:
              if not log.empty else pd.Series(dtype=float))
     trades = _csv(f"logs/{mode}_trades.csv").tail(15).iloc[::-1].fillna("").to_dict("records")
     tail = Path("logs/bot.log").read_text(encoding="utf-8", errors="replace").splitlines()[-60:] if Path("logs/bot.log").exists() else []
-    sel = json.loads(Path(config.SELECTED).read_text()) if Path(config.SELECTED).exists() else {}
+    sel = config.selection()
     return {
-        "running": live.running_pid() is not None, "mode": mode,
-        "first_run": log.empty,  # the bot never ran in this mode yet
+        "running": running is not None, "mode": mode,
+        "stopping": running is not None and live.STOP_FILE.exists(),
+        "halted": [s["strategy"] for s in sleeves if s["halted"]],  # -35% kill switch fired: no new buys
+        "first_run": mode == "paper" and log.empty,  # never ran yet: show the paper-trading onboarding
         "config": {"mode": mode, "budget_krw": cfg.budget_krw, "paper_krw": cfg.paper_krw,
                    "markets": cfg.markets, "strategies": cfg.strategies},
         "keys_set": bool(e.get("UPBIT_ACCESS_KEY") and e.get("UPBIT_SECRET_KEY")),
@@ -208,16 +225,22 @@ def status() -> dict:
         "report": report(mode, f"logs/{mode}_equity.csv"),
         "sleeves": {k: {"params": v["params"], "tradable": v["tradable"]} for k, v in sel.get("sleeves", {}).items()},
         "optimized_at": sel.get("generated_at"),
+        "recommend": (sel.get("self_review") or {}).get("recommend"),
         "all_strategies": [s for s in STRATEGIES if s != "hold"],
     }
 
 
-def check() -> dict:
+def check(telegram: bool = False) -> dict:
     from .__main__ import diagnose
     from .upbit import UpbitClient
 
     e = env()
     ok, problems = diagnose(config.load(), UpbitClient(e.get("UPBIT_ACCESS_KEY"), e.get("UPBIT_SECRET_KEY")), e)
+    if telegram and e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID"):
+        os.environ.update({k: e[k] for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")})
+        if not live.send_telegram("tradebot 연결 점검: 이 메시지가 보이면 알림 설정 완료입니다."):
+            ok = [line for line in ok if not line.startswith("텔레그램")]
+            problems.append("텔레그램 전송 실패: 토큰과 chat id 를 확인하고, 텔레그램에서 내 봇에게 /start 를 먼저 보내세요.")
     return {"ok": ok, "problems": problems}
 
 
@@ -226,10 +249,10 @@ def start(live_confirmed: bool) -> tuple[int, dict]:
         return 409, {"error": "이미 실행 중입니다."}
     cfg = config.load()
     args = [sys.executable, "-m", "tradebot", "run"]
+    problems = check()["problems"]  # the same checks `run` does, answered here instead of in a log file
+    if problems:
+        return 400, {"error": "시작하지 못했습니다. 아래를 고친 뒤 다시 누르세요.", "problems": problems}
     if cfg.mode == "live":
-        problems = check()["problems"]
-        if problems:
-            return 400, {"error": "실거래 점검을 통과하지 못했습니다.", "problems": problems}
         if not live_confirmed:
             return 400, {"error": "실거래는 '실제 돈으로 매매합니다' 확인란을 체크해야 시작됩니다."}
         args.append("--i-understand-the-risk")
@@ -237,8 +260,15 @@ def start(live_confirmed: bool) -> tuple[int, dict]:
     live.STOP_FILE.unlink(missing_ok=True)
     detach = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
               else {"start_new_session": True})  # keeps trading when this window closes
-    with open("logs/run.out", "ab") as out:
-        subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env(), **detach)
+    out = Path("logs/run.out")
+    before = out.stat().st_size if out.exists() else 0
+    with out.open("ab") as f:
+        proc = subprocess.Popen(args, stdout=f, stderr=subprocess.STDOUT, env={**env(), "PYTHONUTF8": "1"}, **detach)
+    for _ in range(20):  # a bot that dies at once says why, here
+        time.sleep(0.1)
+        if proc.poll() is not None:
+            why = out.read_bytes()[before:].decode("utf-8", "replace").strip().splitlines()[-5:]
+            return 500, {"error": "봇이 바로 멈췄습니다.", "problems": why}
     return 200, {"started": True}
 
 
@@ -246,7 +276,7 @@ def stop() -> tuple[int, dict]:
     if not live.running_pid():
         return 200, {"stopped": True}
     live.STOP_FILE.parent.mkdir(exist_ok=True)
-    live.STOP_FILE.touch()  # the bot finishes its current step, saves, then exits (<= 10 s)
+    live.STOP_FILE.touch()  # the bot finishes its current step, saves, then exits
     return 200, {"stopping": True}
 
 
@@ -273,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if not self._allowed():
-            return self._send(403, {"error": "forbidden"})
+            return self._send(403, {"error": "제어판이 다시 시작됐습니다. 이 페이지를 새로고침하세요."})
         if self.path == "/":
             return self._send(200, PAGE.read_text(encoding="utf-8").replace("__TOKEN__", self.token), "text/html; charset=utf-8")
         if self.path == "/api/status":
@@ -282,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self._allowed():
-            return self._send(403, {"error": "forbidden"})
+            return self._send(403, {"error": "제어판이 다시 시작됐습니다. 이 페이지를 새로고침하세요."})
         size = int(self.headers.get("Content-Length") or 0)
         if size > 20_000:
             return self._send(413, {"error": "too large"})
@@ -290,7 +320,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(size) or b"{}")
         except json.JSONDecodeError:
             return self._send(400, {"error": "bad json"})
-        routes = {"/api/settings": lambda: save(body), "/api/check": lambda: (200, check()),
+        routes = {"/api/settings": lambda: save(body), "/api/check": lambda: (200, check(telegram=True)),
                   "/api/start": lambda: start(bool(body.get("live_confirmed"))), "/api/stop": stop}
         if self.path not in routes:
             return self._send(404, {"error": "not found"})

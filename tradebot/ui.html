@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F4F6F4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101816" media="(prefers-color-scheme: dark)">
 <title>tradebot 제어판</title>
 <style>
 :root {
@@ -23,8 +25,10 @@ caption { text-align: left; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
   font: 15px/1.6 "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums; word-break: keep-all; overflow-wrap: anywhere;
 }
+.skip { position: absolute; left: -9999px; top: 8px; background: var(--surface); padding: 8px 12px; z-index: 1; }
+.skip:focus { left: 8px; }
 a { color: var(--accent); }
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .bar { display: flex; align-items: center; gap: 24px; max-width: 1040px; margin: 0 auto; padding: 14px 20px; }
@@ -45,6 +49,7 @@ p { margin: 0; }
 .hero[data-state="running"] { border-color: var(--accent); }
 .hero[data-state="live"] { border-color: var(--up); }
 .hero[data-state="warn"] { border-color: var(--warn); }
+.hero[data-state="armed"] { border-color: var(--up); border-left-style: dashed; }
 .hero .title { display: flex; align-items: center; gap: 12px; }
 .pulse { width: 12px; height: 12px; border-radius: 50%; background: var(--rule); flex: none; }
 .hero[data-state="running"] .pulse, .hero[data-state="live"] .pulse { background: currentColor; animation: beat 2s ease-in-out infinite; }
@@ -58,7 +63,9 @@ button {
   border: 1px solid var(--rule); background: var(--surface); color: var(--ink);
 }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.danger { background: var(--up); border-color: var(--up); color: var(--accent-ink); }
 button.stop { border-color: var(--ink); }
+button:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--ink); }
 button:disabled { opacity: .55; cursor: progress; }
 .confirm { display: flex; gap: 8px; align-items: center; font-weight: 700; color: var(--up); }
 .confirm input { width: 20px; height: 20px; }
@@ -79,7 +86,7 @@ button:disabled { opacity: .55; cursor: progress; }
 .equity { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
 figure { margin: 12px 0 0; position: relative; }
 #chart { width: 100%; height: 220px; display: block; }
-#chart.empty { height: 40px; }
+#chart.blank { height: 40px; }
 #chart text { fill: var(--muted); font-size: 12px; }
 .tip {
   position: absolute; pointer-events: none; background: var(--ink); color: var(--bg);
@@ -91,7 +98,7 @@ summary { cursor: pointer; color: var(--muted); }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--rule); }
 th { color: var(--muted); font-weight: 600; font-size: 13px; }
-td.num, th.num { text-align: right; }
+td.num, th.num { text-align: right; white-space: nowrap; }
 .empty { color: var(--muted); padding: 16px 0; }
 .scroll { overflow-x: auto; }
 
@@ -112,6 +119,7 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
 </style>
 </head>
 <body>
+<a class="skip" href="#now">본문으로 건너뛰기</a>
 <header class="bar">
   <span class="brand">tradebot</span>
   <nav aria-label="구역">
@@ -121,7 +129,7 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
 <main>
 <section id="now" aria-labelledby="state-title">
   <div class="hero" id="hero" data-state="idle">
-    <div class="title"><span class="pulse" aria-hidden="true"></span><h1 id="state-title">봇 상태를 불러오는 중입니다.</h1></div>
+    <div class="title"><span class="pulse" aria-hidden="true"></span><h1 id="state-title">봇 상태를 불러오는 중…</h1></div>
     <p id="state-sub"></p>
     <ol class="steps" id="steps" hidden>
       <li>아래 설정은 기본값 그대로 두어도 됩니다. 모의매매는 실제 돈을 쓰지 않습니다.</li>
@@ -139,6 +147,10 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
     <div>
       <h2>이번 주 점검</h2>
       <ul class="check" id="report"></ul>
+      <div id="recommend" hidden>
+        <button type="button" id="apply-rec">추천대로 전략 바꾸기</button>
+        <div id="rec-msg" role="status" aria-live="polite"></div>
+      </div>
     </div>
     <div>
       <h2>내 장부</h2>
@@ -148,13 +160,13 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
         <svg id="chart" role="img" aria-labelledby="chart-cap"></svg>
         <div class="tip" id="tip" hidden></div>
         <figcaption id="chart-cap" class="muted">날짜별 장부 금액</figcaption>
-        <details><summary>표로 보기</summary><div class="scroll"><table id="curve-table"></table></div></details>
+        <details><summary>표로 보기</summary><div class="scroll" tabindex="0" role="region" aria-label="날짜별 장부 표"><table id="curve-table"></table></div></details>
       </figure>
     </div>
   </div>
 
   <h2>보유 중</h2>
-  <div class="scroll"><table id="positions"></table></div>
+  <div class="scroll" tabindex="0" role="region" aria-label="보유 중인 코인 표"><table id="positions"></table></div>
 </section>
 
 <section id="settings" aria-labelledby="settings-title">
@@ -180,17 +192,17 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
       <p class="help" id="key-help">업비트 → 마이페이지 → Open API 관리에서 발급합니다. 자산조회·주문조회·주문하기만 켜고 <b>출금은 끄세요</b>.
         이 PC의 공인 IP를 등록해야 합니다. 저장한 키는 화면에 다시 보여주지 않습니다.</p>
       <label class="field" for="UPBIT_ACCESS_KEY">Access 키</label>
-      <input type="password" id="UPBIT_ACCESS_KEY" name="UPBIT_ACCESS_KEY" autocomplete="off" aria-describedby="key-help">
+      <input type="password" id="UPBIT_ACCESS_KEY" name="UPBIT_ACCESS_KEY" autocomplete="off" spellcheck="false" translate="no" aria-describedby="key-help">
       <label class="field" for="UPBIT_SECRET_KEY">Secret 키</label>
-      <input type="password" id="UPBIT_SECRET_KEY" name="UPBIT_SECRET_KEY" autocomplete="off" aria-describedby="key-help">
+      <input type="password" id="UPBIT_SECRET_KEY" name="UPBIT_SECRET_KEY" autocomplete="off" spellcheck="false" translate="no" aria-describedby="key-help">
     </fieldset>
     <fieldset>
       <legend>알림 (선택)</legend>
       <p class="help">텔레그램 @BotFather로 봇을 만들어 토큰을 받고, 그 봇에게 말을 건 뒤 chat id를 확인하세요. 매수·매도·손절과 주간 점검이 옵니다.</p>
       <label class="field" for="TELEGRAM_BOT_TOKEN">텔레그램 봇 토큰</label>
-      <input type="password" id="TELEGRAM_BOT_TOKEN" name="TELEGRAM_BOT_TOKEN" autocomplete="off">
+      <input type="password" id="TELEGRAM_BOT_TOKEN" name="TELEGRAM_BOT_TOKEN" autocomplete="off" spellcheck="false" translate="no">
       <label class="field" for="TELEGRAM_CHAT_ID">텔레그램 chat id</label>
-      <input type="text" id="TELEGRAM_CHAT_ID" name="TELEGRAM_CHAT_ID" autocomplete="off">
+      <input type="text" inputmode="numeric" id="TELEGRAM_CHAT_ID" name="TELEGRAM_CHAT_ID" autocomplete="off" spellcheck="false" translate="no">
     </fieldset>
     <fieldset>
       <legend>전략</legend>
@@ -203,7 +215,7 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
       <div class="choices" id="markets"></div>
     </fieldset>
     <div class="form-actions">
-      <button type="submit" class="primary">설정 저장</button>
+      <button type="submit" class="primary" id="save">설정 저장</button>
       <button type="button" id="check">연결 점검</button>
     </div>
     <div id="form-msg" role="status" aria-live="polite"></div>
@@ -212,8 +224,8 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
 
 <section id="history" aria-labelledby="history-title">
   <h2 id="history-title">최근 거래</h2>
-  <div class="scroll"><table id="trades"></table></div>
-  <details><summary>실행 기록 보기 (logs/bot.log)</summary><pre id="log"></pre></details>
+  <div class="scroll" tabindex="0" role="region" aria-label="최근 거래 표"><table id="trades"></table></div>
+  <details><summary>실행 기록 보기 (logs/bot.log)</summary><pre id="log" tabindex="0" role="region" aria-label="실행 기록"></pre></details>
 </section>
 </main>
 
@@ -221,7 +233,7 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
 const TOKEN = "__TOKEN__";
 const MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"];
 const $ = (s) => document.querySelector(s);
-let S = null, dirty = false;
+let S = null, dirty = false, seen = "";
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -232,7 +244,7 @@ async function api(path, body) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     const e = new Error(data.error || (data.errors || []).join(" ") || `오류 ${r.status}`);
-    e.data = data;
+    e.data = data; e.status = r.status;
     throw e;
   }
   return data;
@@ -250,6 +262,14 @@ function say(target, text, problems) {
     problems.forEach((p) => ul.append(el("li", p)));
     box.append(ul);
   }
+}
+
+function checklist(target, text, problems, ok) {
+  const box = $(target), ul = el("ul", undefined, "check");
+  box.replaceChildren(el("p", text), ul);
+  const item = (mark, cls, line) => { const li = el("li"); li.append(el("span", mark, `icon ${cls}`), el("span", line)); ul.append(li); };
+  problems.forEach((l) => item("!", "warn", l));
+  ok.forEach((l) => item("✓", "ok", l));
 }
 
 function table(id, head, rows, empty) {
@@ -275,13 +295,19 @@ function table(id, head, rows, empty) {
 function renderHero() {
   const hero = $("#hero"), live = S.mode === "live";
   const warn = S.report.some((l) => l.startsWith("점검 필요"));
-  hero.dataset.state = S.running ? (warn ? "warn" : live ? "live" : "running") : "idle";
-  $("#steps").hidden = !S.first_run;
+  hero.dataset.state = S.running ? (warn ? "warn" : live ? "live" : "running") : live ? "armed" : "idle";
+  $("#steps").hidden = !S.first_run || S.running;
+  const now = `${S.running}/${S.mode}`;
+  if (seen && seen !== now) $("#action-msg").replaceChildren();  // old start/stop messages no longer apply
+  seen = now;
   const phase = S.report.find((l) => l.startsWith("Phase") || l.startsWith("증액") || l.startsWith("현재 예산")) || "";
   let title, sub;
-  if (S.running) {
+  if (S.stopping) {
+    title = "정지하는 중…";
+    sub = "지금 단계를 마치고 저장한 뒤 멈춥니다. 보통 20초 안에 끝납니다.";
+  } else if (S.running) {
     title = live ? "실제 돈으로 매매하고 있습니다." : "모의매매로 돌아가고 있습니다.";
-    sub = `${phase} 이 창을 닫아도 봇은 계속 돕니다.`.trim();
+    sub = `${phase ? phase + ". " : ""}이 창을 닫아도 봇은 계속 돕니다.`;
   } else if (S.first_run) {
     title = "처음이시네요. 모의매매부터 켜 보세요.";
     sub = "실제 돈은 쓰지 않습니다. 5초면 시작됩니다.";
@@ -292,9 +318,9 @@ function renderHero() {
   $("#state-title").textContent = title;
   $("#state-sub").textContent = sub;
   const btn = $("#toggle");
-  btn.disabled = false;
-  btn.textContent = S.running ? "정지" : live ? "실거래 시작" : "모의매매 시작";
-  btn.className = S.running ? "stop" : "primary";
+  btn.disabled = !!S.stopping;
+  btn.textContent = S.stopping ? "정지하는 중…" : S.running ? "정지" : live ? "실거래 시작" : "모의매매 시작";
+  btn.className = S.running ? "stop" : live ? "danger" : "primary";
   $("#confirm-wrap").hidden = S.running || !live;
 }
 
@@ -302,12 +328,19 @@ function renderReport() {
   const ul = $("#report");
   ul.replaceChildren();
   S.report.forEach((line) => {
-    const warn = line.startsWith("점검 필요");
+    const warn = line.startsWith("점검 필요") || line.startsWith("자가 점검 추천");
+    const info = line.startsWith("아직");
     const li = el("li");
-    li.append(el("span", warn ? "!" : "✓", `icon ${warn ? "warn" : "ok"}`), el("span", line));
+    li.append(el("span", warn ? "!" : info ? "–" : "✓", `icon ${warn ? "warn" : info ? "muted" : "ok"}`), el("span", line));
     ul.append(li);
   });
-  if (S.sleeves && Object.keys(S.sleeves).length) {
+  if (S.halted.length) {
+    const li = el("li");
+    li.append(el("span", "!", "icon warn"), el("span", `${S.halted.join(", ")}: 고점 대비 -35%로 비상 정지했습니다. 새 매수를 하지 않습니다. `
+      + "원인을 확인한 뒤 봇을 정지하고 ./start.sh resume (Windows: start.bat resume)을 실행하면 풀립니다."));
+    ul.prepend(li);
+  }
+  if (S.running && S.sleeves && Object.keys(S.sleeves).length) {
     const off = Object.entries(S.sleeves).filter(([, v]) => !v.tradable).map(([k]) => k);
     const li = el("li");
     li.append(el("span", off.length ? "!" : "✓", `icon ${off.length ? "warn" : "ok"}`),
@@ -316,6 +349,18 @@ function renderReport() {
     ul.append(li);
   }
 }
+
+function renderRecommend() {
+  $("#recommend").hidden = !S.recommend;
+}
+$("#apply-rec").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/settings", { strategies: S.recommend });
+    say("#rec-msg", r.restart_needed ? "적용했습니다. 정지 후 다시 시작하면 새 전략으로 돕니다." : "적용했습니다. 다음 시작부터 새 전략으로 돕니다.");
+    dirty = false;
+    refresh();
+  } catch (e) { say("#rec-msg", e.message, e.data?.errors); }
+});
 
 function renderMoney() {
   if (!S.funded) {
@@ -341,7 +386,7 @@ function drawChart(points) {
   tip.hidden = true;
   const ns = "http://www.w3.org/2000/svg";
   const mk = (tag, attrs) => { const n = document.createElementNS(ns, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
-  svg.classList.toggle("empty", points.length < 2);
+  svg.classList.toggle("blank", points.length < 2);
   const W = svg.clientWidth || 600, H = points.length < 2 ? 40 : 220, L = 8, R = 8, T = 16, B = 26;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   if (points.length < 2) {
@@ -382,7 +427,7 @@ function drawChart(points) {
 
 function renderHistory() {
   table("#trades", [["시각"], ["전략"], ["코인"], ["구분"], ["가격", true], ["이유"], ["손익", true]],
-    S.trades.map((t) => [String(t.time).slice(0, 16).replace("T", " "), t.strategy || "-", t.market,
+    S.trades.map((t) => [new Date(t.time).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" }), t.strategy || "-", t.market,
       t.side === "buy" ? "매수" : "매도", Math.round(t.price).toLocaleString("ko-KR"), REASONS[t.reason] || t.reason,
       t.pnl === "" ? "-" : { text: pct(Number(t.pnl)), cls: tone(Number(t.pnl)) }]),
     "아직 거래가 없습니다. 추세 신호를 기다리는 중이며, 며칠씩 거래가 없는 것도 정상입니다.");
@@ -402,13 +447,17 @@ function fillForm() {
   $("#TELEGRAM_BOT_TOKEN").placeholder = S.telegram_set ? "저장됨 (바꿀 때만 새로 입력)" : "선택";
   const boxes = (id, name, all, chosen) => {
     const wrap = $(id);
-    wrap.replaceChildren();
-    all.forEach((v) => {
-      const lab = el("label", undefined, "choice"), inp = el("input");
-      inp.type = "checkbox"; inp.name = name; inp.value = v; inp.checked = chosen.includes(v);
-      lab.append(inp, el("span", LABELS[v] || v));
-      wrap.append(lab);
-    });
+    if (wrap.dataset.built !== all.join()) {  // build once: rebuilding every poll would steal keyboard focus
+      wrap.replaceChildren();
+      all.forEach((v) => {
+        const lab = el("label", undefined, "choice"), inp = el("input");
+        inp.type = "checkbox"; inp.name = name; inp.value = v;
+        lab.append(inp, el("span", LABELS[v] || v));
+        wrap.append(lab);
+      });
+      wrap.dataset.built = all.join();
+    }
+    wrap.querySelectorAll("input").forEach((inp) => { inp.checked = chosen.includes(inp.value); });
   };
   boxes("#strategies", "strategies", ["donchian", "ema_cross", "vbo", "rsi_mr"].filter((s) => S.all_strategies.includes(s)), c.strategies);
   boxes("#markets", "markets", [...new Set([...MARKETS, ...c.markets])], c.markets);
@@ -417,9 +466,10 @@ function fillForm() {
 function render() {
   renderHero();
   renderReport();
+  renderRecommend();
   renderMoney();
   renderHistory();
-  if (!dirty) fillForm();
+  if (!dirty && !$("#form").contains(document.activeElement)) fillForm();
 }
 
 async function refresh() {
@@ -427,12 +477,16 @@ async function refresh() {
     S = await api("/api/status");
     render();
   } catch (e) {
-    $("#state-title").textContent = "제어판이 봇과 연결되지 않았습니다.";
-    $("#state-sub").textContent = "터미널에서 python -m tradebot ui 를 다시 실행하세요.";
+    const restarted = e.status === 403;
+    $("#state-title").textContent = restarted ? "제어판이 다시 시작됐습니다." : "제어판이 꺼져 있습니다.";
+    $("#state-sub").textContent = restarted ? "이 페이지를 새로고침하세요."
+      : "start 를 다시 실행하세요 (Windows: start.bat, Mac·Linux: ./start.sh). 봇은 그동안에도 계속 돕니다.";
+    $("#toggle").disabled = true;
   }
 }
 
 $("#form").addEventListener("input", () => { dirty = true; });
+window.addEventListener("beforeunload", (ev) => { if (dirty) ev.preventDefault(); });
 $("#form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const f = new FormData(ev.target);
@@ -443,6 +497,8 @@ $("#form").addEventListener("submit", async (ev) => {
   for (const k of ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]) {
     if (f.get(k)) body[k] = f.get(k);
   }
+  const save = $("#save");
+  save.disabled = true;
   try {
     const r = await api("/api/settings", body);
     for (const k of ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "TELEGRAM_BOT_TOKEN"]) $(`#${k}`).value = "";
@@ -451,14 +507,16 @@ $("#form").addEventListener("submit", async (ev) => {
     refresh();
   } catch (e) {
     say("#form-msg", "저장하지 못했습니다. 아래를 고쳐 주세요.", e.data?.errors || [e.message]);
-  }
+  } finally { save.disabled = false; }
 });
 $("#check").addEventListener("click", async () => {
-  say("#form-msg", "업비트와 연결을 확인하는 중입니다.");
+  const btn = $("#check");
+  btn.disabled = true;
+  say("#form-msg", "업비트와 연결을 확인하는 중…");
   try {
     const r = await api("/api/check", {});
-    say("#form-msg", r.problems.length ? "고칠 것이 있습니다." : "모두 정상입니다.", [...r.problems, ...r.ok.map((o) => `확인됨: ${o}`)]);
-  } catch (e) { say("#form-msg", e.message); }
+    checklist("#form-msg", r.problems.length ? "고칠 것이 있습니다." : "모두 정상입니다.", r.problems, r.ok);
+  } catch (e) { say("#form-msg", e.message); } finally { btn.disabled = false; }
 });
 $("#toggle").addEventListener("click", async () => {
   const btn = $("#toggle");
@@ -466,15 +524,17 @@ $("#toggle").addEventListener("click", async () => {
   try {
     if (S.running) {
       await api("/api/stop", {});
-      say("#action-msg", "정지를 요청했습니다. 지금 단계를 마치고 저장한 뒤 10초 안에 멈춥니다.");
+      say("#action-msg", "정지를 요청했습니다. 지금 단계를 마치고 저장한 뒤 멈춥니다 (보통 20초 안에).");
     } else {
+      say("#action-msg", "점검하고 시작하는 중…");
       await api("/api/start", { live_confirmed: $("#live-confirm").checked });
       say("#action-msg", "시작했습니다. 첫 신호 계산까지 10~20초 걸립니다.");
     }
   } catch (e) {
     say("#action-msg", e.message, e.data?.problems);
   }
-  setTimeout(refresh, 1500);
+  await refresh();
+  if (!btn.disabled) btn.focus();  // the click disabled it, which dropped keyboard focus to the page
 });
 
 refresh();

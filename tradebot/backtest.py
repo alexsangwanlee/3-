@@ -134,7 +134,7 @@ def run(frames: dict[str, pd.DataFrame], risk: Risk = Risk(), costs: Costs = Cos
         for j in range(n):
             if qty[j] > 0 and lo[j, i] <= stop[j]:
                 sell(j, min(o[j, i], stop[j]), i, "stop")
-            elif qty[j] > 0 and risk.lock_gain:  # ratchet from this bar's high; applies from the next bar
+            elif qty[j] > 0 and risk.lock_gain and risk.lock_giveback:  # ratchet from this bar's high; applies from the next bar
                 high[j] = max(high[j], h[j, i])
                 if high[j] >= entry_px[j] * (1 + risk.lock_gain):
                     stop[j] = np.fmax(stop[j], high[j] * (1 - risk.lock_giveback))
