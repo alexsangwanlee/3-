@@ -7,7 +7,8 @@ mode = "paper"
 markets = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
 
 # 캔들 단위(분). 백테스트와 실거래가 같은 값을 써야 합니다.
-timeframe = 60
+# 240(4시간봉) + 변동성 역가중: 1시간봉 대비 표본외 샤프 1.17 vs 0.82, 최대낙폭 -18% vs -27% (results/optimization.md)
+timeframe = 240
 
 # "auto" = `python -m tradebot optimize`가 고른 전략/파라미터(results/selected.json) 사용
 # 직접 지정: "vbo" | "donchian" | "rsi_mr" | "ema_cross"  (+ 아래 [params])
@@ -26,6 +27,7 @@ daily_target = 0
 daily_loss_limit = 0.05  # 하루 -5% 도달 → 전량 청산 후 그날 매매 중단 (0 = 끄기)
 max_drawdown = 0.35      # 최고점 대비 -35% → 전량 청산 후 봇 정지(수동 재시작 필요) (0 = 끄기)
 risk_per_trade = 0.01    # 손절 시 계좌의 최대 1% 손실이 되도록 포지션 크기 제한
+vol_reweight = true      # 변동성이 낮은 코인(BTC)에 더 많이, 높은 코인(DOGE·SOL)에 덜 배분
 
 [costs]
 fee = 0.0005       # 업비트 원화마켓 수수료(편도)

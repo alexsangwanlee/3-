@@ -7,7 +7,7 @@ from tradebot import backtest
 from tradebot.risk import Costs, Risk
 from tradebot.strategies import _finish, prepare
 
-NO_GUARD = Risk(daily_target=None, daily_loss_limit=None, max_drawdown=None, risk_per_trade=0)
+NO_GUARD = Risk(daily_target=None, daily_loss_limit=None, max_drawdown=None, risk_per_trade=0, vol_reweight=False)
 COSTS = Costs(fee=0.001, slippage=0.002)
 
 
@@ -23,7 +23,7 @@ def test_daily_target_locks_profit_until_next_day(unit):
     df = flat_bars(prices)
     df.index = df.index.as_unit(unit)
     res = backtest.run({"X": prepare("hold", df)}, Risk(daily_target=0.03, daily_loss_limit=None,
-                                                                      max_drawdown=None, risk_per_trade=0), Costs(0, 0))
+                                                                      max_drawdown=None, risk_per_trade=0, vol_reweight=False), Costs(0, 0))
     first = res.trades.iloc[0]
     assert first["reason"] == "daily_target"
     assert first["pnl"] == pytest.approx(1.01 ** 3 - 1)  # entered at bar 0 open, locked at bar 3 close
@@ -38,12 +38,12 @@ def test_daily_loss_limit_and_stop_loss():
     df = _finish(flat_bars(prices), enter=pd.Series([True] + [False] * 4, index=flat_bars(prices).index))
     df["stop_dist"] = 2.5
     res = backtest.run({"X": df}, Risk(daily_target=None, daily_loss_limit=None, max_drawdown=None,
-                                       risk_per_trade=0), Costs(0, 0))
+                                       risk_per_trade=0, vol_reweight=False), Costs(0, 0))
     t = res.trades.iloc[0]
     assert t["reason"] == "stop" and t["exit"] == 97  # stop at 97.5, bar opened at 97 (gap) -> fill 97
 
     res = backtest.run({"X": prepare("hold", flat_bars(prices))},
-                       Risk(daily_target=None, daily_loss_limit=0.02, max_drawdown=None, risk_per_trade=0), Costs(0, 0))
+                       Risk(daily_target=None, daily_loss_limit=0.02, max_drawdown=None, risk_per_trade=0, vol_reweight=False), Costs(0, 0))
     assert res.trades.iloc[0]["reason"] == "daily_loss"
     assert res.equity.iloc[-1] == pytest.approx(0.97)
 
@@ -64,7 +64,7 @@ def test_breakout_fills_at_level_once_per_day():
 def test_max_drawdown_halts_forever():
     prices = [100] * 24 + [70] * 24 + [140] * 24
     res = backtest.run({"X": prepare("hold", flat_bars(prices))},
-                       Risk(daily_target=None, daily_loss_limit=None, max_drawdown=0.25, risk_per_trade=0), Costs(0, 0))
+                       Risk(daily_target=None, daily_loss_limit=None, max_drawdown=0.25, risk_per_trade=0, vol_reweight=False), Costs(0, 0))
     assert list(res.trades["reason"]) == ["max_drawdown"]
     assert res.equity.iloc[-1] == pytest.approx(0.7)
 

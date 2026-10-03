@@ -1,163 +1,267 @@
 {
   "strategy": "donchian",
   "params": {
-    "n": 168,
-    "m": 48,
+    "n": 96,
+    "m": 12,
     "stop_atr": 3
   },
-  "recent_train_sharpe": 1.59,
+  "recent_train_sharpe": 1.42,
   "oos_metrics": {
-    "days": 916.0,
-    "total_return": 0.9981917762432755,
-    "cagr": 0.31763577492044615,
-    "avg_daily": 0.0008637415416192207,
+    "days": 1646.0,
+    "total_return": 1.464933493819947,
+    "cagr": 0.22146966394751066,
+    "avg_daily": 0.0006106544991009387,
     "median_daily": 0.0,
-    "sharpe": 1.115119871088969,
-    "max_drawdown": -0.23384751603003096,
-    "best_day": 0.17484183545592935,
-    "worst_day": -0.1558954408005805,
-    "days_ge_3pct": 0.03820960698689956,
-    "days_le_-3pct": 0.007641921397379912,
-    "trades": 401.0,
-    "win_rate": 0.32169576059850374
+    "sharpe": 1.03702848629607,
+    "max_drawdown": -0.18370274512726226,
+    "best_day": 0.10721058725484545,
+    "worst_day": -0.10549563701011522,
+    "days_ge_3pct": 0.018833535844471446,
+    "days_le_-3pct": 0.006682867557715674,
+    "trades": 324.0,
+    "win_rate": 0.2839506172839506
   },
   "windows": [
     {
-      "test_start": "2024-04-01",
+      "test_start": "2022-04-02",
+      "params": {
+        "n": 48,
+        "m": 12,
+        "stop_atr": 2
+      },
+      "train_sharpe": 0.24
+    },
+    {
+      "test_start": "2022-06-01",
+      "params": {
+        "n": 96,
+        "m": 48,
+        "stop_atr": 2
+      },
+      "train_sharpe": 0.65
+    },
+    {
+      "test_start": "2022-07-31",
+      "params": {
+        "n": 48,
+        "m": 12,
+        "stop_atr": 3
+      },
+      "train_sharpe": 0.13
+    },
+    {
+      "test_start": "2022-09-29",
+      "params": null,
+      "train_sharpe": -0.8017222135568635
+    },
+    {
+      "test_start": "2022-11-28",
+      "params": {
+        "n": 24,
+        "m": 12,
+        "stop_atr": 3
+      },
+      "train_sharpe": 1.38
+    },
+    {
+      "test_start": "2023-01-27",
+      "params": {
+        "n": 96,
+        "m": 12,
+        "stop_atr": 3
+      },
+      "train_sharpe": 2.76
+    },
+    {
+      "test_start": "2023-03-28",
+      "params": {
+        "n": 96,
+        "m": 12,
+        "stop_atr": 3
+      },
+      "train_sharpe": 2.62
+    },
+    {
+      "test_start": "2023-05-27",
+      "params": {
+        "n": 96,
+        "m": 12,
+        "stop_atr": 3
+      },
+      "train_sharpe": 2.48
+    },
+    {
+      "test_start": "2023-07-26",
       "params": {
         "n": 24,
         "m": 24,
         "stop_atr": 3
       },
-      "train_sharpe": 3.89
+      "train_sharpe": 1.51
     },
     {
-      "test_start": "2024-05-31",
+      "test_start": "2023-09-24",
       "params": {
-        "n": 96,
-        "m": 24,
+        "n": 168,
+        "m": 12,
         "stop_atr": 3
       },
-      "train_sharpe": 2.47
+      "train_sharpe": 1.01
     },
     {
-      "test_start": "2024-07-30",
+      "test_start": "2023-11-23",
+      "params": {
+        "n": 48,
+        "m": 48,
+        "stop_atr": 3
+      },
+      "train_sharpe": 2.59
+    },
+    {
+      "test_start": "2024-01-22",
       "params": {
         "n": 168,
         "m": 48,
+        "stop_atr": 3
+      },
+      "train_sharpe": 3.07
+    },
+    {
+      "test_start": "2024-03-22",
+      "params": {
+        "n": 24,
+        "m": 48,
+        "stop_atr": 2
+      },
+      "train_sharpe": 4.36
+    },
+    {
+      "test_start": "2024-05-21",
+      "params": {
+        "n": 24,
+        "m": 24,
+        "stop_atr": 3
+      },
+      "train_sharpe": 3.01
+    },
+    {
+      "test_start": "2024-07-20",
+      "params": {
+        "n": 24,
+        "m": 24,
+        "stop_atr": 3
+      },
+      "train_sharpe": 2.9
+    },
+    {
+      "test_start": "2024-09-18",
+      "params": {
+        "n": 48,
+        "m": 12,
+        "stop_atr": 2
+      },
+      "train_sharpe": 0.27
+    },
+    {
+      "test_start": "2024-11-17",
+      "params": {
+        "n": 48,
+        "m": 12,
+        "stop_atr": 2
+      },
+      "train_sharpe": 3.59
+    },
+    {
+      "test_start": "2025-01-16",
+      "params": {
+        "n": 24,
+        "m": 12,
+        "stop_atr": 3
+      },
+      "train_sharpe": 3.13
+    },
+    {
+      "test_start": "2025-03-17",
+      "params": {
+        "n": 24,
+        "m": 12,
+        "stop_atr": 2
+      },
+      "train_sharpe": 3.34
+    },
+    {
+      "test_start": "2025-05-16",
+      "params": {
+        "n": 24,
+        "m": 12,
+        "stop_atr": 3
+      },
+      "train_sharpe": 2.04
+    },
+    {
+      "test_start": "2025-07-15",
+      "params": {
+        "n": 24,
+        "m": 12,
+        "stop_atr": 3
+      },
+      "train_sharpe": 1.9
+    },
+    {
+      "test_start": "2025-09-13",
+      "params": {
+        "n": 24,
+        "m": 12,
         "stop_atr": 3
       },
       "train_sharpe": 2.57
     },
     {
-      "test_start": "2024-09-28",
-      "params": {
-        "n": 48,
-        "m": 48,
-        "stop_atr": 3
-      },
-      "train_sharpe": 0.38
-    },
-    {
-      "test_start": "2024-11-27",
-      "params": {
-        "n": 48,
-        "m": 48,
-        "stop_atr": 3
-      },
-      "train_sharpe": 3.55
-    },
-    {
-      "test_start": "2025-01-26",
-      "params": {
-        "n": 48,
-        "m": 48,
-        "stop_atr": 2
-      },
-      "train_sharpe": 3.07
-    },
-    {
-      "test_start": "2025-03-27",
-      "params": {
-        "n": 168,
-        "m": 24,
-        "stop_atr": 3
-      },
-      "train_sharpe": 2.96
-    },
-    {
-      "test_start": "2025-05-26",
-      "params": {
-        "n": 168,
-        "m": 12,
-        "stop_atr": 3
-      },
-      "train_sharpe": 1.08
-    },
-    {
-      "test_start": "2025-07-25",
-      "params": {
-        "n": 168,
-        "m": 48,
-        "stop_atr": 2
-      },
-      "train_sharpe": 2.06
-    },
-    {
-      "test_start": "2025-09-23",
-      "params": {
-        "n": 168,
-        "m": 12,
-        "stop_atr": 3
-      },
-      "train_sharpe": 2.81
-    },
-    {
-      "test_start": "2025-11-22",
-      "params": {
-        "n": 168,
-        "m": 12,
-        "stop_atr": 3
-      },
-      "train_sharpe": 2.96
-    },
-    {
-      "test_start": "2026-01-21",
-      "params": {
-        "n": 168,
-        "m": 12,
-        "stop_atr": 3
-      },
-      "train_sharpe": 1.99
-    },
-    {
-      "test_start": "2026-03-22",
+      "test_start": "2025-11-12",
       "params": {
         "n": 168,
         "m": 12,
         "stop_atr": 2
       },
-      "train_sharpe": 0.57
+      "train_sharpe": 2.28
     },
     {
-      "test_start": "2026-05-21",
+      "test_start": "2026-01-11",
+      "params": {
+        "n": 168,
+        "m": 12,
+        "stop_atr": 2
+      },
+      "train_sharpe": 1.91
+    },
+    {
+      "test_start": "2026-03-12",
+      "params": {
+        "n": 168,
+        "m": 12,
+        "stop_atr": 2
+      },
+      "train_sharpe": 0.11
+    },
+    {
+      "test_start": "2026-05-11",
       "params": null,
-      "train_sharpe": -0.23417920043240895
+      "train_sharpe": -0.5202892900446922
     },
     {
-      "test_start": "2026-07-20",
+      "test_start": "2026-07-10",
       "params": null,
-      "train_sharpe": -1.026333750769336
+      "train_sharpe": -1.577375756225458
     },
     {
-      "test_start": "2026-09-18",
+      "test_start": "2026-09-08",
       "params": {
-        "n": 168,
-        "m": 24,
-        "stop_atr": 3
+        "n": 96,
+        "m": 12,
+        "stop_atr": 2
       },
-      "train_sharpe": 1.47
+      "train_sharpe": 1.19
     }
   ],
-  "generated_at": "2026-10-03T12:05:56.825561+00:00"
+  "generated_at": "2026-10-03T13:19:52.857616+00:00"
 }

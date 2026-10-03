@@ -12,14 +12,14 @@ SELECTED = "results/selected.json"
 class Config:
     mode: str = "paper"
     markets: list[str] = field(default_factory=lambda: ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"])
-    timeframe: int = 60
+    timeframe: int = 240
     strategy: str = "auto"
     params: dict = field(default_factory=dict)
     risk: Risk = field(default_factory=Risk)
     costs: Costs = field(default_factory=Costs)
     paper_krw: float = 1_000_000
     poll_seconds: int = 10
-    history_days: int = 1095
+    history_days: int = 1825
     train_days: int = 180
     test_days: int = 60
 

@@ -8,6 +8,7 @@ Every strategy returns the input frame plus these columns, all known at the
     entry_stop  float  buy-stop level active during this bar; NaN = none (max 1 fill/day)
     stop_dist   float  stop-loss distance below the fill price for a new position; NaN = none
     size        float  fraction (0..1) of the per-market allocation to use
+    vol         float  std of the last 20 completed daily returns (for inverse-vol weighting)
 
 Days are UTC days, which matches Upbit's daily candle (09:00 KST).
 """
@@ -58,6 +59,8 @@ def _finish(df, enter=None, exit=None, entry_stop=None, size=None, stop_atr=0.0)
     out["entry_stop"] = np.nan if entry_stop is None else entry_stop
     out["stop_dist"] = stop_atr * atr(df).shift(1) if stop_atr > 0 else np.nan
     out["size"] = 1.0 if size is None else size.clip(0, 1).fillna(0.0)
+    day, d = daily(df)
+    out["vol"] = d["close"].pct_change().rolling(20).std().shift(1).reindex(day).to_numpy()
     return out
 
 

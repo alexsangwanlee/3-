@@ -4,7 +4,7 @@ from urllib.parse import unquote, urlencode
 import jwt
 import pytest
 
-from tradebot.risk import DailyGuard, order_value
+from tradebot.risk import DailyGuard, inverse_vol_weights, order_value
 from tradebot.upbit import UpbitClient, make_jwt
 
 
@@ -30,6 +30,12 @@ def test_order_value_caps():
     assert order_value(1e6, 1e6, 0.5, 1.0, 5.0, 100, 0.01, 0) == pytest.approx(2e5)
     # cash cap incl. fee
     assert order_value(1e6, 1000, 0.5, 1.0, float("nan"), 100, 0.01, 0.0005) == pytest.approx(1000 / 1.0005)
+
+
+def test_inverse_vol_weights():
+    # BTC at 2% daily vol gets twice the weight of DOGE at 4%; mean weight stays 1; unknown vol -> 0
+    assert inverse_vol_weights([0.02, 0.04]) == pytest.approx([4 / 3, 2 / 3])
+    assert list(inverse_vol_weights([0.02, float("nan")])) == [1.0, 0.0]  # a warming-up market must not block the rest
 
 
 def test_jwt_matches_pyjwt():

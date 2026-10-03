@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from .data import regularize, to_frame
-from .risk import Costs, DailyGuard, Risk, order_value
+from .risk import Costs, DailyGuard, Risk, inverse_vol_weights, order_value
 from .strategies import prepare
 from .upbit import UpbitClient
 
@@ -203,6 +203,8 @@ class Bot:
         if self.guard.can_trade:
             eq = self.equity(prices)
             alloc = self.cfg.risk.alloc_per_market or 1.0 / len(self.cfg.markets)
+            weight = dict(zip(self.cfg.markets, inverse_vol_weights([rows[m]["vol"] for m in self.cfg.markets])
+                              if self.cfg.risk.vol_reweight else [1.0] * len(self.cfg.markets)))
             for m in self.cfg.markets:
                 if m in positions:
                     continue
@@ -213,7 +215,7 @@ class Bot:
                     reason = "breakout"
                 else:
                     continue
-                krw = order_value(eq, self.broker.cash(), alloc, row["size"], row["stop_dist"], price,
+                krw = order_value(eq, self.broker.cash(), alloc, row["size"] * weight[m], row["stop_dist"], price,
                                   self.cfg.risk.risk_per_trade, self.cfg.costs.fee)
                 self.state["last_enter_bar"][m] = str(bar)
                 self.state["last_entry_day"][m] = day

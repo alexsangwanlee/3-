@@ -2,6 +2,8 @@
 import math
 from dataclasses import asdict, dataclass
 
+import numpy as np
+
 
 @dataclass
 class Risk:
@@ -12,6 +14,17 @@ class Risk:
     max_drawdown: float | None = 0.35      # -35% from the equity peak -> flatten and halt for good
     risk_per_trade: float = 0.01           # max equity lost if a stop-loss is hit
     alloc_per_market: float | None = None  # default: 1 / number of markets
+    vol_reweight: bool = True              # size *= (1/vol) / mean(1/vol) across markets; see results/optimization.md
+
+
+def inverse_vol_weights(vol):
+    """(1/vol) / mean(1/vol) across markets (axis 0) with known vol; mean weight 1. Unknown vol -> 0."""
+    with np.errstate(divide="ignore"):
+        inv = 1.0 / np.asarray(vol, dtype=float)
+    known = np.isfinite(inv)
+    inv = np.where(known, inv, 0.0)
+    mean = inv.sum(axis=0) / np.maximum(known.sum(axis=0), 1)
+    return np.divide(inv, mean, out=np.zeros_like(inv), where=mean > 0)
 
 
 @dataclass

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .risk import Costs, DailyGuard, Risk, order_value
+from .risk import Costs, DailyGuard, Risk, inverse_vol_weights, order_value
 
 @dataclass
 class Result:
@@ -69,6 +69,8 @@ def run(frames: dict[str, pd.DataFrame], risk: Risk = Risk(), costs: Costs = Cos
 
     o, h, lo, c = col("open"), col("high"), col("low"), col("close")
     enter, exit_, es, sd, size = col("enter", bool), col("exit", bool), col("entry_stop"), col("stop_dist"), col("size")
+    if risk.vol_reweight:
+        size = size * inverse_vol_weights(col("vol"))
     days = idx.floor("D").asi8  # day keys; works for any datetime resolution
     fee, slip = costs.fee, costs.slippage
     alloc = risk.alloc_per_market or 1.0 / len(markets)

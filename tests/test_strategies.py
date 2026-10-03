@@ -3,7 +3,7 @@ import pytest
 
 from tradebot.strategies import GRIDS, STRATEGIES, combos, prepare
 
-SIGNALS = ["enter", "exit", "entry_stop", "stop_dist", "size"]
+SIGNALS = ["enter", "exit", "entry_stop", "stop_dist", "size", "vol"]
 CASES = [(name, {}) for name in STRATEGIES] + [(name, combos(name)[-1]) for name in GRIDS]
 
 
