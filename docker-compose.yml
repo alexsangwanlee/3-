@@ -1,0 +1,13 @@
+# 24시간 실행: docker compose up -d     로그: docker compose logs -f     정지: docker compose down
+# mode(모의/실거래)는 config.toml 에서 정합니다. 키는 .env 에서 읽고 이미지에는 넣지 않습니다.
+services:
+  tradebot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./data:/app/data
+      - ./state:/app/state
+      - ./logs:/app/logs
+      - ./results:/app/results

@@ -81,6 +81,7 @@ def run(frames: dict[str, pd.DataFrame], risk: Risk = Risk(), costs: Costs = Cos
     entry_px = np.zeros(n)
     stop = np.full(n, np.nan)
     entry_i = np.zeros(n, dtype=int)
+    high = np.zeros(n)  # highest high since entry (giveback guard)
     last_entry_day = np.full(n, -1)
     guard = DailyGuard.from_risk(risk)
     equity = np.empty(T)
@@ -121,12 +122,16 @@ def run(frames: dict[str, pd.DataFrame], risk: Risk = Risk(), costs: Costs = Cos
                     continue
                 qty[j] = value / fill
                 cash -= value * (1 + fee)
-                entry_px[j], entry_i[j], last_entry_day[j] = fill, i, days[i]
+                entry_px[j], entry_i[j], last_entry_day[j], high[j] = fill, i, days[i], fill
                 stop[j] = fill - sd[j, i]  # NaN when the strategy has no stop
 
         for j in range(n):
             if qty[j] > 0 and lo[j, i] <= stop[j]:
                 sell(j, min(o[j, i], stop[j]), i, "stop")
+            elif qty[j] > 0 and risk.lock_gain:  # ratchet from this bar's high; applies from the next bar
+                high[j] = max(high[j], h[j, i])
+                if high[j] >= entry_px[j] * (1 + risk.lock_gain):
+                    stop[j] = np.fmax(stop[j], high[j] * (1 - risk.lock_giveback))
 
         eq = cash + float(qty @ c[:, i])
         reason = guard.check(eq)

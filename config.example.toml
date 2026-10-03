@@ -15,6 +15,7 @@ timeframe = 240
 strategy = "auto"
 
 paper_krw = 1000000  # 모의매매 시작 자금
+budget_krw = 0       # 실거래에서 봇이 쓸 최대 원화 (0 = 계좌 전체). 예: 1000000 이면 100만원까지만 사용
 
 # strategy를 직접 지정할 때만 사용. 예) vbo: k=0.5, ma=5, target_vol=0.03
 [params]
@@ -28,6 +29,8 @@ daily_loss_limit = 0.05  # 하루 -5% 도달 → 전량 청산 후 그날 매매
 max_drawdown = 0.35      # 최고점 대비 -35% → 전량 청산 후 봇 정지(수동 재시작 필요) (0 = 끄기)
 risk_per_trade = 0.01    # 손절 시 계좌의 최대 1% 손실이 되도록 포지션 크기 제한
 vol_reweight = true      # 변동성이 낮은 코인(BTC)에 더 많이, 높은 코인(DOGE·SOL)에 덜 배분
+lock_gain = 0.30         # 수익 지키기: 진입가 대비 +30% 이후에는 ...
+lock_giveback = 0.15     # ... 최고가에서 15% 떨어지면 매도 (0 = 끄기)
 
 [costs]
 fee = 0.0005       # 업비트 원화마켓 수수료(편도)

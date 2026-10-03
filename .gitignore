@@ -6,3 +6,4 @@ state/
 logs/
 .env
 config.toml
+.venv/

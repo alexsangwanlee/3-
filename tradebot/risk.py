@@ -15,6 +15,8 @@ class Risk:
     risk_per_trade: float = 0.01           # max equity lost if a stop-loss is hit
     alloc_per_market: float | None = None  # default: 1 / number of markets
     vol_reweight: bool = True              # size *= (1/vol) / mean(1/vol) across markets; see results/optimization.md
+    lock_gain: float | None = 0.30         # giveback guard: once a position is up 30% from entry ...
+    lock_giveback: float = 0.15            # ... sell if it falls 15% from its highest price since entry
 
 
 def inverse_vol_weights(vol):

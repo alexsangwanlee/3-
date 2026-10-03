@@ -83,3 +83,16 @@ def test_metrics_basic():
     assert m["max_drawdown"] == pytest.approx(-0.5)
     assert m["days_ge_3pct"] == pytest.approx(1 / 3)
     assert np.isfinite(m["sharpe"])
+
+
+def test_giveback_locks_most_of_a_big_winner_but_ignores_normal_moves():
+    risk = Risk(daily_target=None, daily_loss_limit=None, max_drawdown=None, risk_per_trade=0, vol_reweight=False,
+                lock_gain=0.30, lock_giveback=0.15)
+    up_then_crash = [100, 110, 125, 140, 150, 120, 90]  # +50% peak, then a crash
+    df = _finish(flat_bars(up_then_crash), enter=pd.Series([True] + [False] * 6, index=flat_bars(up_then_crash).index))
+    t = backtest.run({"X": df}, risk, Costs(0, 0)).trades.iloc[0]
+    assert (t["exit"], t["reason"]) == (120, "stop")  # stop 150*0.85=127.5, bar opened at 120 (gap) -> 120
+
+    small = [100, 110, 125, 106, 104]  # peak +25%: rule not armed, keeps the position
+    df = _finish(flat_bars(small), enter=pd.Series([True] + [False] * 4, index=flat_bars(small).index))
+    assert backtest.run({"X": df}, risk, Costs(0, 0)).trades.empty

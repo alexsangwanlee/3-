@@ -3,11 +3,13 @@ import csv
 import json
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from .data import regularize, to_frame
 from .risk import Costs, DailyGuard, Risk, inverse_vol_weights, order_value
@@ -16,6 +18,17 @@ from .upbit import UpbitClient
 
 log = logging.getLogger("tradebot")
 MIN_ORDER_KRW = 5000
+
+
+def notify(text: str) -> None:
+    """Telegram message when TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set. Never raises."""
+    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    if not (token and chat):
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat, "text": text}, timeout=10)
+    except Exception:
+        log.warning("telegram notify failed")  # no exception text: it contains the URL, i.e. the token
 
 
 class PaperBroker:
@@ -86,6 +99,8 @@ class BotConfig:
     poll_seconds: int = 10
     state_path: str = "state/bot_state.json"
     trades_path: str = "logs/trades.csv"
+    budget_krw: float = 0       # most KRW the bot may use; profits above it are left alone (0 = everything)
+    allow_entries: bool = True  # False = optimize found nothing worth trading: only manage open positions
 
 
 class Bot:
@@ -165,6 +180,7 @@ class Bot:
         self.save()
         pnl = fill * (1 - self.cfg.costs.fee) / (pos["entry"] * (1 + self.cfg.costs.fee)) - 1
         log.info("SELL %s qty=%.8f @ %.4f (%s) pnl=%.2f%%", market, qty, fill, reason, pnl * 100)
+        notify(f"[tradebot] 매도 {market} @ {fill:,.0f} ({reason}) 손익 {pnl:+.2%}")
         self._log_trade(time=pd.Timestamp.now(tz="UTC").isoformat(), market=market, side="sell",
                         qty=qty, price=fill, reason=reason, pnl=round(pnl, 6))
 
@@ -173,15 +189,22 @@ class Bot:
         if qty <= 0:
             return
         stop = fill - stop_dist if math.isfinite(stop_dist) else None
-        self.state["positions"][market] = {"qty": qty, "entry": fill, "stop": stop,
+        self.state["positions"][market] = {"qty": qty, "entry": fill, "stop": stop, "high": fill,
                                            "entry_time": pd.Timestamp.now(tz="UTC").isoformat()}
         self.save()
         log.info("BUY  %s %.0f KRW qty=%.8f @ %.4f (%s) stop=%s", market, krw, qty, fill, reason, stop)
+        notify(f"[tradebot] 매수 {market} {krw:,.0f}원 @ {fill:,.0f}" + (f", 손절가 {stop:,.0f}" if stop else ""))
         self._log_trade(time=pd.Timestamp.now(tz="UTC").isoformat(), market=market, side="buy",
                         qty=qty, price=fill, reason=reason, pnl="")
 
     def equity(self, prices: dict[str, float]) -> float:
-        return self.broker.cash() + sum(p["qty"] * prices[m] for m, p in self.state["positions"].items())
+        invested = sum(p["qty"] * prices[m] for m, p in self.state["positions"].items())
+        total = self.broker.cash() + invested
+        return min(total, self.cfg.budget_krw) if self.cfg.budget_krw else total
+
+    def _cash(self, prices: dict[str, float]) -> float:
+        invested = sum(p["qty"] * prices[m] for m, p in self.state["positions"].items())
+        return max(0.0, min(self.broker.cash(), self.equity(prices) - invested))
 
     def step(self, now: pd.Timestamp | None = None) -> None:
         now = now or pd.Timestamp.now(tz="UTC")
@@ -199,8 +222,13 @@ class Bot:
                 self._sell(m, prices[m], "exit")
             elif pos["stop"] is not None and prices[m] <= pos["stop"]:
                 self._sell(m, prices[m], "stop")
+        risk = self.cfg.risk
+        for m, pos in positions.items():  # giveback guard, after the stop check like the backtester
+            pos["high"] = max(pos.get("high", pos["entry"]), prices[m])
+            if risk.lock_gain and pos["high"] >= pos["entry"] * (1 + risk.lock_gain):
+                pos["stop"] = max(pos["stop"] or 0.0, pos["high"] * (1 - risk.lock_giveback))
 
-        if self.guard.can_trade:
+        if self.guard.can_trade and self.cfg.allow_entries:
             eq = self.equity(prices)
             alloc = self.cfg.risk.alloc_per_market or 1.0 / len(self.cfg.markets)
             weight = dict(zip(self.cfg.markets, inverse_vol_weights([rows[m]["vol"] for m in self.cfg.markets])
@@ -215,7 +243,7 @@ class Bot:
                     reason = "breakout"
                 else:
                     continue
-                krw = order_value(eq, self.broker.cash(), alloc, row["size"] * weight[m], row["stop_dist"], price,
+                krw = order_value(eq, self._cash(prices), alloc, row["size"] * weight[m], row["stop_dist"], price,
                                   self.cfg.risk.risk_per_trade, self.cfg.costs.fee)
                 self.state["last_enter_bar"][m] = str(bar)
                 self.state["last_entry_day"][m] = day
@@ -226,15 +254,23 @@ class Bot:
         reason = self.guard.check(self.equity(prices))
         if reason:
             log.warning("risk guard: %s -> closing all positions", reason)
+            notify(f"[tradebot] 리스크 가드 발동: {reason} -> 전량 청산"
+                   + (" (봇 정지, 확인 후 수동 재시작)" if reason == "max_drawdown" else " (내일까지 매매 중단)"))
             for m in list(positions):
                 self._sell(m, prices[m], reason)
         self.save()
 
-    def run_forever(self) -> None:
-        log.info("bot started: strategy=%s params=%s markets=%s", self.cfg.strategy, self.cfg.params, self.cfg.markets)
-        while True:
+    def run_for(self, seconds: float) -> None:
+        log.info("bot running: strategy=%s params=%s markets=%s entries=%s",
+                 self.cfg.strategy, self.cfg.params, self.cfg.markets, self.cfg.allow_entries)
+        end, failing = time.time() + seconds, False
+        while time.time() < end:
             try:
                 self.step()
+                failing = False
             except Exception:  # keep running through network hiccups
                 log.exception("step failed")
+                if not failing:
+                    notify("[tradebot] 오류 발생, 재시도 중 (logs/bot.log 확인)")
+                failing = True
             time.sleep(self.cfg.poll_seconds)

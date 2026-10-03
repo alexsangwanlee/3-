@@ -63,3 +63,24 @@ To revert, set `timeframe = 60` and `vol_reweight = false` in `config.toml`.
 
 See [`walkforward.md`](walkforward.md): donchian, out-of-sample 2022-04 → 2026-10, +146.5% total, CAGR +22.1%,
 Sharpe 1.04, MDD -18.4%. Equal-weight buy & hold made +38.7% with a -66.3% drawdown.
+
+## Stop-loss and profit-protection rules (4h donchian + re-weighting, dev only)
+
+All six variants were fixed before running.
+
+| variant | total | Sharpe | Sharpe 1st/2nd half | MDD | worst day | 2024-12-03 | verdict |
+|---|---|---|---|---|---|---|---|
+| baseline (fixed 3×ATR stop) | +156.1% | 1.15 | 1.10 / 1.20 | -18.4% | -10.5% | -10.55% | baseline |
+| break-even after +1.5R | +156.0% | 1.17 | 0.99 / 1.32 | -19.6% | -7.4% | -7.40% | fail (1st half) |
+| **giveback: after +30%, sell 15% below the high** | +193.9% | **1.35** | 1.13 / 1.53 | -17.6% | -6.0% | -2.17% | **pass, adopted** |
+| stop grid [2,3,4]×ATR | +152.8% | 1.22 | 1.32 / 1.14 | -18.7% | -10.5% | -10.55% | fail (2nd half) |
+| hard cap: stop ≤ 12% below entry | +145.9% | 1.11 | 1.10 / 1.12 | -18.4% | -10.5% | -10.55% | fail |
+| break-even + giveback | +154.8% | 1.19 | 0.84 / 1.49 | -19.6% | -5.7% | -2.07% | fail (1st half) |
+
+Caveats on the adopted rule:
+
+- It fired only 13 times in four years. About two thirds of its Sharpe gain is one trade: XRP on 2024-12-03 exited at +75% instead of -10%.
+- The 30% / 15% thresholds were chosen with that event in mind, so its effect on that day is in-sample.
+- None of the differences are statistically significant (|t| < 1.1).
+- It costs nothing when it does not fire, and it does not clip ordinary trends. That is why it ships, as insurance rather than as a proven edge.
+- Full period with giveback on: +182.9% vs +146.5% off, Sharpe 1.22 vs 1.04 (see [`scenarios.md`](scenarios.md)).
