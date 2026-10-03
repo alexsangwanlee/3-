@@ -77,7 +77,7 @@ button:disabled { opacity: .55; cursor: progress; }
 .steps { margin: 20px 0 0; padding-left: 22px; max-width: 64ch; }
 .steps li { margin: 6px 0; }
 
-.grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 40px; }
+.grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 40px; }
 @media (max-width: 760px) { .grid { grid-template-columns: 1fr; gap: 0; } h1 { font-size: 24px; } .hero { padding: 20px; } }
 .check { list-style: none; padding: 0; margin: 0; }
 .check li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--rule); }
@@ -95,6 +95,8 @@ details { margin-top: 10px; }
 .stats { display: flex; flex-wrap: wrap; gap: 8px 36px; margin: 4px 0 0; }
 .stat { color: var(--muted); font-size: 14px; }
 .stat b { display: block; color: var(--ink); font-size: 20px; letter-spacing: -0.01em; }
+.stat b.up { color: var(--up); } .stat b.down { color: var(--down); }
+#claude .form-actions { margin-top: 12px; }
 .key { display: inline-block; width: 20px; vertical-align: middle; margin: 0 6px 0 0; border-top: 2px solid var(--accent); }
 .key.gross { border-top: 2px dashed var(--muted); }
 .key.cost { border-top: 8px solid color-mix(in srgb, var(--warn) 25%, transparent); }
@@ -108,7 +110,8 @@ th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--rul
 th { color: var(--muted); font-weight: 600; font-size: 13px; }
 td.num, th.num { text-align: right; white-space: nowrap; }
 .empty { color: var(--muted); padding: 16px 0; }
-.scroll { overflow-x: auto; }
+.scroll { overflow: auto; max-height: 420px; }
+.scroll th, .scroll td { overflow-wrap: normal; white-space: nowrap; }
 
 form { background: var(--surface); padding: 24px 28px; }
 fieldset { border: 0; padding: 0; margin: 0 0 28px; }
@@ -148,7 +151,7 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
       <label class="confirm" id="confirm-wrap" hidden><input type="checkbox" id="live-confirm"> 실제 돈으로 매매합니다</label>
       <button type="button" class="primary" id="toggle" disabled>시작</button>
     </div>
-    <div id="action-msg" role="status" aria-live="polite"></div>
+    <div id="action-msg" role="status" aria-live="polite" tabindex="-1"></div>
     <div class="paused" id="paused" hidden>
       <p id="paused-text"></p>
       <button type="button" id="resume-entries">매수 다시 허용</button>
@@ -173,7 +176,7 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
           <button type="button" class="primary" id="claude-approve" hidden>제안 실행</button>
           <button type="button" id="claude-run">지금 검토 받기</button>
         </div>
-        <div id="claude-msg" role="status" aria-live="polite"></div>
+        <div id="claude-msg" role="status" aria-live="polite" tabindex="-1"></div>
       </div>
       <div id="ai-trade" hidden>
         <h2>AI 매매 (Claude·GPT 상호 검토)</h2>
@@ -265,7 +268,7 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
       <button type="submit" class="primary" id="save">설정 저장</button>
       <button type="button" id="check">연결 점검</button>
     </div>
-    <div id="form-msg" role="status" aria-live="polite"></div>
+    <div id="form-msg" role="status" aria-live="polite" tabindex="-1"></div>
   </form>
 </section>
 
@@ -280,7 +283,7 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
 const TOKEN = "__TOKEN__";
 const MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"];
 const $ = (s) => document.querySelector(s);
-let S = null, dirty = false, seen = "";
+let S = null, dirty = false, seen = "", busy = false;
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -343,14 +346,19 @@ function table(id, head, rows, empty) {
 function renderHero() {
   const hero = $("#hero"), live = S.mode === "live";
   const warn = S.report.some((l) => l.startsWith("점검 필요"));
-  hero.dataset.state = S.running ? (warn ? "warn" : live ? "live" : "running") : live ? "armed" : "idle";
+  hero.dataset.state = S.running ? (warn || S.halted.length ? "warn" : live ? "live" : "running") : live ? "armed" : "idle";
+  if (busy === "start" && S.running) busy = false;
   $("#steps").hidden = !S.first_run || S.running;
   const now = `${S.running}/${S.mode}`;
   if (seen && seen !== now) $("#action-msg").replaceChildren();  // old start/stop messages no longer apply
   seen = now;
-  const phase = S.report.find((l) => l.startsWith("Phase") || l.startsWith("증액") || l.startsWith("현재 예산")) || "";
+  const phase = S.halted.length ? `${S.halted.join(", ")} 비상 정지 중`
+    : S.report.find((l) => l.startsWith("Phase") || l.startsWith("증액") || l.startsWith("현재 예산")) || "";
   let title, sub;
-  if (S.stopping) {
+  if (busy === "start") {
+    title = "시작하는 중…";
+    sub = "점검을 통과했고 첫 신호를 계산하고 있습니다. 보통 20초 안에 끝납니다.";
+  } else if (S.stopping) {
     title = "정지하는 중…";
     sub = "지금 단계를 마치고 저장한 뒤 멈춥니다. 보통 20초 안에 끝납니다.";
   } else if (S.running) {
@@ -366,8 +374,8 @@ function renderHero() {
   $("#state-title").textContent = title;
   $("#state-sub").textContent = sub;
   const btn = $("#toggle");
-  btn.disabled = !!S.stopping;
-  btn.textContent = S.stopping ? "정지하는 중…" : S.running ? "정지" : live ? "실거래 시작" : "모의매매 시작";
+  btn.disabled = !!(S.stopping || busy);
+  btn.textContent = busy === "start" ? "시작하는 중…" : S.stopping ? "정지하는 중…" : S.running ? "정지" : live ? "실거래 시작" : "모의매매 시작";
   btn.className = S.running ? "stop" : live ? "danger" : "primary";
   $("#confirm-wrap").hidden = S.running || !live;
 }
@@ -375,20 +383,34 @@ function renderHero() {
 function renderReport() {
   const ul = $("#report");
   ul.replaceChildren();
-  S.report.forEach((line) => {
+  S.report.filter((line) => !(S.halted.length && (line.startsWith("Phase 1 진행") || line.startsWith("증액 가능")))).forEach((line) => {
     const warn = line.startsWith("점검 필요") || line.startsWith("자가 점검 추천");
     const info = line.startsWith("아직");
     item(ul, warn ? "!" : info ? "–" : "✓", warn ? "warn" : info ? "muted" : "ok", line);
   });
   if (S.halted.length) {
-    ul.prepend(item(ul, "!", "warn", `${S.halted.join(", ")}: 고점 대비 -35%로 비상 정지했습니다. 새 매수를 하지 않습니다. `
-      + "원인을 확인한 뒤 봇을 정지하고 ./start.sh resume (Windows: start.bat resume)을 실행하면 풀립니다."));
+    const li = item(ul, "!", "warn", `${S.halted.join(", ")}: 장부가 고점 대비 -${Math.round(S.max_drawdown * 100)}%가 되어 비상 정지했습니다. `
+      + "새 매수를 하지 않습니다. 원인(시장 폭락인지, 설정 실수인지)을 확인한 뒤 봇을 정지하고 아래 버튼으로 풀 수 있습니다.");
+    const b = el("button", "비상 정지 풀기");
+    b.type = "button";
+    b.disabled = S.running;
+    b.title = S.running ? "봇을 먼저 정지하세요" : "";
+    b.addEventListener("click", async () => {
+      if (!confirm("비상 정지를 풀까요? 다시 시작하면 지금 장부를 새 고점으로 삼아 매매합니다.")) return;
+      try { await api("/api/halt/clear", {}); say("#action-msg", "비상 정지를 풀었습니다. 시작을 누르면 다시 매매합니다."); }
+      catch (e) { say("#action-msg", e.message); }
+      await refresh();
+      $("#action-msg").focus();
+    });
+    li.lastChild.append(el("br"), b);
+    ul.prepend(li);
   }
   if (S.running && S.sleeves && Object.keys(S.sleeves).length) {
     const off = Object.entries(S.sleeves).filter(([, v]) => !v.tradable).map(([k]) => k);
+    const on = Object.keys(S.sleeves).filter((k) => !off.includes(k) && !S.halted.includes(k));
     item(ul, off.length ? "!" : "✓", off.length ? "warn" : "ok",
       off.length ? `${off.join(", ")}: 최근 성과가 나빠 새 매수를 멈췄습니다. 보유분은 계속 관리합니다.`
-                 : `전략 ${Object.keys(S.sleeves).join(", ")} 모두 매매 중 (매주 자동 재조정)`);
+                 : `전략 ${on.join(", ")} 매매 중 (매주 자동 재조정)`);
   }
 }
 
@@ -403,18 +425,20 @@ function renderClaude() {
   $("#claude").hidden = !S.claude_set && !S.claude;
   const c = S.claude;
   const tokens = c && c.usage && c.usage.input_tokens ? `, 토큰 입력 ${c.usage.input_tokens.toLocaleString("ko-KR")} / 출력 ${(c.usage.output_tokens || 0).toLocaleString("ko-KR")}` : "";
-  $("#claude-when").textContent = c ? `${new Date(c.at).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" })}에 받은 검토 (${c.model}${tokens})`
+  const who = c && String(c.model).startsWith("gpt") ? "GPT" : "Claude";
+  $("#claude-when").textContent = c ? `${new Date(c.at).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" })}에 ${who}가 한 검토${tokens}`
     : "아직 검토가 없습니다. 매주 재검증 뒤 자동으로 받거나, 아래 버튼으로 지금 받을 수 있습니다.";
   $("#claude-summary").textContent = c ? c.review.summary : "";
   const ul = $("#claude-points");
   ul.replaceChildren();
   if (c) {
     c.review.risks.forEach((r) => item(ul, "!", "warn", r));
-    c.review.user_checks.forEach((r) => item(ul, "–", "muted", `확인해 보세요: ${r}`));
+    c.review.user_checks.forEach((r) => item(ul, "?", "muted", r));
     const status = { applied: "실행했습니다", waiting: "승인을 기다립니다", none: "" }[c.status];
     $("#claude-action").textContent = `조치: ${ACTIONS[c.review.action]}${status ? ` (${status})` : ""}. ${c.review.reason}`;
   } else $("#claude-action").textContent = "";
   $("#claude-approve").hidden = !(c && c.status === "waiting");
+  if (c) $("#claude-approve").textContent = `제안 실행: ${ACTIONS[c.review.action]}`;
   renderAiTrade();
   $("#claude-run").disabled = !S.claude_set;
 }
@@ -449,15 +473,19 @@ $("#claude-run").addEventListener("click", async () => {
   }
   catch (e) { say("#claude-msg", e.message); }
   await refresh();
+  $("#claude-msg").focus();
 });
 $("#claude-approve").addEventListener("click", async () => {
   try { const r = await api("/api/claude/approve", {}); say("#claude-msg", r.status === "applied" ? "실행했습니다." : "이미 처리됐습니다."); }
   catch (e) { say("#claude-msg", e.message); }
-  refresh();
+  await refresh();
+  $("#claude-msg").focus();
 });
 $("#resume-entries").addEventListener("click", async () => {
-  try { await api("/api/entries/resume", {}); } catch (e) { say("#action-msg", e.message); }
-  refresh();
+  try { await api("/api/entries/resume", {}); say("#action-msg", "신규 매수를 다시 허용했습니다."); }
+  catch (e) { say("#action-msg", e.message); }
+  await refresh();
+  $("#action-msg").focus();
 });
 $("#apply-rec").addEventListener("click", async () => {
   try {
@@ -492,7 +520,7 @@ function renderProfit() {
     stat("순수익 (수수료·슬리피지 뺀 뒤)", won(P.net), tone(P.net)),
     stat("낸 수수료", won(P.fees)),
     stat("슬리피지 (주문 순간보다 불리하게 체결된 금액)", won(P.slippage)),
-    stat("비용이 먹은 몫", gross > 0 ? `수익의 ${(costs / gross * 100).toFixed(0)}%` : "-"));
+    stat("비용이 먹은 몫", costs <= 0 ? "-" : gross > costs ? `수익의 ${(costs / gross * 100).toFixed(0)}%` : "비용이 수익보다 커서 손실"));
   drawPnl(P.series);
   table("#pnl-table", [["날짜"], ["순수익", true], ["누적 비용", true], ["비용 전 수익", true]],
     P.series.slice().reverse().map(([d, n, c]) => [d, won(n), won(c), won(n + c)]), "아직 기록이 없습니다.");
@@ -501,6 +529,9 @@ function renderProfit() {
 function drawPnl(points) {
   const svg = $("#pnl-chart"), tip = $("#pnl-tip"), ns = "http://www.w3.org/2000/svg";
   const mk = (tag, attrs) => { const n = document.createElementNS(ns, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
+  const key = JSON.stringify(points) + svg.clientWidth;
+  if (svg.dataset.drawn === key) return;  // unchanged: keep the hover tooltip instead of redrawing every poll
+  svg.dataset.drawn = key;
   svg.replaceChildren();
   tip.hidden = true;
   svg.classList.toggle("blank", points.length < 2);
@@ -518,7 +549,7 @@ function drawPnl(points) {
   const y = (v) => T + (1 - (v - lo) / span) * (H - T - B);
   const css = getComputedStyle(document.documentElement), v = (name) => css.getPropertyValue(name);
   const path = (vals) => vals.map((val, i) => `${i ? "L" : "M"}${x(i)},${y(val)}`).join("");
-  svg.append(mk("line", { x1: L, x2: W - R, y1: y(0), y2: y(0), stroke: v("--rule"), "stroke-width": 1 }));
+  svg.append(mk("line", { x1: L, x2: W - R, y1: y(0), y2: y(0), stroke: v("--muted"), "stroke-width": 1, "stroke-opacity": 0.6 }));
   svg.append(mk("path", { d: path(gross) + net.map((val, i) => `L${x(net.length - 1 - i)},${y(net[net.length - 1 - i])}`).join("") + "Z",
     fill: v("--warn"), "fill-opacity": 0.18, stroke: "none" }));
   svg.append(mk("path", { d: path(gross), fill: "none", stroke: v("--muted"), "stroke-width": 2, "stroke-dasharray": "5 4" }));
@@ -527,6 +558,7 @@ function drawPnl(points) {
   label(points[0][0], L, H - 8, "start");
   label(points[points.length - 1][0], W - R, H - 8, "end");
   label(won(hi), L, T - 4, "start");
+  if (lo < 0) label("0원", L, y(0) - 4, "start");
   const cross = mk("line", { y1: T, y2: H - B, stroke: v("--muted"), "stroke-width": 1, visibility: "hidden" });
   svg.append(cross);
   svg.onpointermove = (ev) => {
@@ -536,7 +568,8 @@ function drawPnl(points) {
     cross.setAttribute("visibility", "visible"); cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i));
     tip.hidden = false;
     tip.textContent = `${d}  순수익 ${won(n)}, 비용 ${won(c)}`;
-    tip.style.left = `${(x(i) / W) * box.width}px`;
+    const half = tip.offsetWidth / 2;  // keep the tooltip on screen at both edges
+    tip.style.left = `${Math.min(Math.max((x(i) / W) * box.width, half), box.width - half)}px`;
     tip.style.top = `${(y(n + c) / H) * box.height}px`;
   };
   svg.onpointerleave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); };
@@ -564,7 +597,8 @@ function fillForm() {
   $("#budget_krw").value = Math.round(c.budget_krw).toLocaleString("ko-KR");
   $("#UPBIT_ACCESS_KEY").placeholder = $("#UPBIT_SECRET_KEY").placeholder = S.keys_set ? "저장됨 (바꿀 때만 새로 입력)" : "붙여 넣기";
   $("#TELEGRAM_BOT_TOKEN").placeholder = S.telegram_set ? "저장됨 (바꿀 때만 새로 입력)" : "선택";
-  $("#ANTHROPIC_API_KEY").placeholder = $("#OPENAI_API_KEY").placeholder = S.claude_set ? "저장됨 또는 선택 (바꿀 때만 새로 입력)" : "선택";
+  $("#ANTHROPIC_API_KEY").placeholder = S.claude_key_set ? "저장됨 (바꿀 때만 새로 입력)" : "선택";
+  $("#OPENAI_API_KEY").placeholder = S.gpt_key_set ? "저장됨 (바꿀 때만 새로 입력)" : "선택";
   $("#claude_autopilot").checked = !!c.claude_autopilot;
   const boxes = (id, name, all, chosen) => {
     const wrap = $(id);
@@ -603,8 +637,9 @@ async function refresh() {
     const restarted = e.status === 403;
     $("#state-title").textContent = restarted ? "제어판이 다시 시작됐습니다." : "제어판이 꺼져 있습니다.";
     $("#state-sub").textContent = restarted ? "이 페이지를 새로고침하세요."
-      : "start 를 다시 실행하세요 (Windows: start.bat, Mac·Linux: ./start.sh). 봇은 그동안에도 계속 돕니다.";
+      : "시작 프로그램(Windows: start.bat, Mac·Linux: ./start.sh)을 다시 실행하세요. 봇은 그동안에도 계속 돕니다.";
     $("#toggle").disabled = true;
+    $("#hero").dataset.state = "warn";
   }
 }
 
@@ -629,8 +664,9 @@ $("#form").addEventListener("submit", async (ev) => {
     say("#form-msg", r.restart_needed ? "설정을 저장했습니다. 봇이 돌고 있어서, 정지 후 다시 시작해야 적용됩니다." : "설정을 저장했습니다.");
     refresh();
   } catch (e) {
-    say("#form-msg", "저장하지 못했습니다. 아래를 고쳐 주세요.", e.data?.errors || [e.message]);
-  } finally { save.disabled = false; }
+    if (e.status === 400) say("#form-msg", "저장하지 못했습니다. 아래를 고쳐 주세요.", e.data?.errors || [e.message]);
+    else say("#form-msg", (e.data?.errors || [e.message]).join(" "));
+  } finally { save.disabled = false; $("#form-msg").focus(); }
 });
 $("#check").addEventListener("click", async () => {
   const btn = $("#check");
@@ -639,25 +675,30 @@ $("#check").addEventListener("click", async () => {
   try {
     const r = await api("/api/check", {});
     checklist("#form-msg", r.problems.length ? "고칠 것이 있습니다." : "모두 정상입니다.", r.problems, r.ok);
-  } catch (e) { say("#form-msg", e.message); } finally { btn.disabled = false; }
+  } catch (e) { say("#form-msg", e.message); } finally { btn.disabled = false; $("#form-msg").focus(); }
 });
 $("#toggle").addEventListener("click", async () => {
   const btn = $("#toggle");
   btn.disabled = true;
+  busy = true;
   try {
     if (S.running) {
       await api("/api/stop", {});
       say("#action-msg", "정지를 요청했습니다. 지금 단계를 마치고 저장한 뒤 멈춥니다 (보통 20초 안에).");
+      busy = false;
     } else {
       say("#action-msg", "점검하고 시작하는 중…");
       await api("/api/start", { live_confirmed: $("#live-confirm").checked });
       say("#action-msg", "시작했습니다. 첫 신호 계산까지 10~20초 걸립니다.");
+      busy = "start";  // until the bot reports running
+      setTimeout(() => { if (busy === "start") { busy = false; refresh(); } }, 30000);
     }
   } catch (e) {
+    busy = false;
     say("#action-msg", e.message, e.data?.problems);
   }
   await refresh();
-  if (!btn.disabled) btn.focus();  // the click disabled it, which dropped keyboard focus to the page
+  (btn.disabled ? $("#action-msg") : btn).focus();  // the click disabled it, which dropped keyboard focus
 });
 
 refresh();

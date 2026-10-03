@@ -50,7 +50,7 @@ def plan_status(log: pd.DataFrame, bands: dict, mode: str) -> list[str]:
 
     if mode == "paper":
         lines.append(f"Phase 0 모의매매 {days}/{PAPER_DAYS}일" if days < PAPER_DAYS else
-                     "Phase 1 진행 가능: 설정에서 실거래로 바꾸고, 실거래 금액을 목표 금액의 10~20%로"
+                     "Phase 1 진행 가능: 설정에서 실거래로 바꾸고, 실거래 금액을 목표 금액의 10~20%로 맞추세요"
                      if not warn else "모의매매 계속: 점검 항목을 먼저 해결하세요")
     else:
         _, funded = totals(log)

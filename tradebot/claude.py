@@ -27,6 +27,7 @@ MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
 GPT_API = "https://api.openai.com/v1/responses"
 GPT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-6-astra")
 REVIEW = Path("state/claude_review.json")
+LAST_ERROR = ""  # why the last review failed, in Korean, for the panel
 KNOWLEDGE = Path("results/knowledge.json")  # every idea already tested, so Claude never spends tokens rediscovering it
 ACTIONS = {"keep": "그대로 유지", "pause_entries": "신규 매수 멈춤", "apply_recommendation": "검증된 전략 추천 적용",
            "resume_entries": "신규 매수 다시 허용"}
@@ -206,11 +207,15 @@ def run(cfg: config.Config) -> dict | None:
     if last.get("digest") == digest:  # nothing the bot knows has changed: no call, no tokens
         log.info("AI review skipped: nothing changed since %s", last.get("at"))
         return {**last, "skipped": True}
+    global LAST_ERROR
     try:
         got, usage = call(ais[0], _system(), payload, TOOL)
         rv = _clean(got)
     except Exception as e:  # never let the review break trading
         log.warning("AI review failed: %s", type(e).__name__)
+        LAST_ERROR = ("키가 틀렸거나 권한이 없습니다" if "401" in str(e) or "403" in str(e)
+                      else "인터넷 연결 또는 AI 서비스 상태를 확인하세요" if isinstance(e, requests.RequestException)
+                      and not isinstance(e, requests.HTTPError) else f"AI 서비스 응답 오류 ({type(e).__name__})")
         return None
     if not _possible(rv["action"]):
         rv["action"] = "keep"

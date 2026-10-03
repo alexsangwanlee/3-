@@ -310,19 +310,15 @@ def cmd_review(cfg, args):
 
 
 def cmd_resume(cfg, args):
-    """Clear the -35% kill switch, after you have looked into why it fired."""
-    from .live import ledgers, running_pid, write_json
+    """Clear the kill switch, after you have looked into why it fired."""
+    from .live import clear_halt, running_pid
 
     if running_pid():
         raise SystemExit("봇을 먼저 정지하세요 (제어판의 정지 버튼).")
-    cleared = 0
-    for name, st in ledgers(cfg.mode).items():
-        if (st.get("guard") or {}).get("halted"):
-            st["guard"].update(halted=False, peak=0.0)  # the next step takes today's ledger as the new peak
-            write_json(f"state/{cfg.mode}_{name}.json", st)
-            print(f"{name}: 비상 정지를 풀었습니다. 다시 시작하면 지금 장부를 새 고점으로 삼아 매매합니다.")
-            cleared += 1
-    print("풀 것이 없습니다." if not cleared else "제어판에서 다시 시작하세요.")
+    cleared = clear_halt(cfg.mode)
+    for name in cleared:
+        print(f"{name}: 비상 정지를 풀었습니다. 다시 시작하면 지금 장부를 새 고점으로 삼아 매매합니다.")
+    print("제어판에서 다시 시작하세요." if cleared else "풀 것이 없습니다.")
 
 
 REOPTIMIZE_DAYS = 7

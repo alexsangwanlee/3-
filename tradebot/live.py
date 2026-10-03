@@ -46,6 +46,17 @@ def ledgers(mode: str) -> dict[str, dict]:
             for p in sorted(Path("state").glob(f"{mode}_*.json"))}
 
 
+def clear_halt(mode: str) -> list[str]:
+    """Lift the kill switch on every halted ledger: the next step takes today's ledger as the new peak."""
+    cleared = []
+    for name, st in ledgers(mode).items():
+        if (st.get("guard") or {}).get("halted"):
+            st["guard"].update(halted=False, peak=0.0)
+            write_json(f"state/{mode}_{name}.json", st)
+            cleared.append(name)
+    return cleared
+
+
 def entries_paused() -> bool:
     return PAUSE_FILE.exists()
 

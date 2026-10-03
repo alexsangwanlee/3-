@@ -28,9 +28,13 @@ PAGE = Path(__file__).with_name("ui.html")
 SECRET_KEYS = {"UPBIT_ACCESS_KEY": r"[A-Za-z0-9]{20,80}", "UPBIT_SECRET_KEY": r"[A-Za-z0-9]{20,80}",
                "TELEGRAM_BOT_TOKEN": r"\d+:[A-Za-z0-9_-]{20,}", "TELEGRAM_CHAT_ID": r"-?\d+",
                "ANTHROPIC_API_KEY": r"sk-ant-[A-Za-z0-9_-]{20,}", "OPENAI_API_KEY": r"sk-(?!ant-)[A-Za-z0-9_-]{20,}"}
+WHERE = {"UPBIT_ACCESS_KEY": "업비트 Open API 관리", "UPBIT_SECRET_KEY": "업비트 Open API 관리",
+         "TELEGRAM_BOT_TOKEN": "텔레그램 @BotFather", "TELEGRAM_CHAT_ID": "텔레그램 getUpdates",
+         "ANTHROPIC_API_KEY": "console.anthropic.com", "OPENAI_API_KEY": "platform.openai.com"}
 LABELS = {"UPBIT_ACCESS_KEY": "Access 키", "UPBIT_SECRET_KEY": "Secret 키",
           "TELEGRAM_BOT_TOKEN": "텔레그램 봇 토큰", "TELEGRAM_CHAT_ID": "텔레그램 chat id", "ANTHROPIC_API_KEY": "Claude API 키",
           "OPENAI_API_KEY": "GPT(OpenAI) API 키"}
+CHILDREN: list = []  # bots started from this panel
 CONFIG_KEYS = ("mode", "budget_krw", "paper_krw", "markets", "strategies", "claude_autopilot")
 
 
@@ -85,8 +89,10 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
                 continue  # empty field = keep what is saved
             if re.fullmatch(SECRET_KEYS[key], v):
                 out[key] = v
+            elif key == "OPENAI_API_KEY" and v.startswith("sk-ant-"):
+                errors.append("sk-ant- 로 시작하는 키는 Claude 키입니다. 위의 Claude API 키 칸에 넣으세요.")
             else:
-                errors.append(f"{LABELS[key]} 형식이 맞지 않습니다. 업비트·텔레그램에서 복사한 값을 그대로 붙여 넣으세요.")
+                errors.append(f"{LABELS[key]} 형식이 맞지 않습니다. {WHERE[key]}에서 복사한 값을 그대로 붙여 넣으세요.")
         else:
             errors.append(f"알 수 없는 항목: {key}")
     return out, errors
@@ -212,10 +218,11 @@ def profit(log: pd.DataFrame, trades: pd.DataFrame, fee: float) -> dict:
         fees, slip = cum["fee"], cum["slip_cost"]
     net = eq - funded
     return {"net": float(net.iloc[-1]), "fees": float(fees.iloc[-1]), "slippage": float(slip.iloc[-1]),
-            "series": [[d, round(n), round(f + s_)] for d, n, f, s_ in zip(eq.index, net, fees, slip)]}
+            "series": [[d, round(n, 2), round(f + s_, 2)] for d, n, f, s_ in zip(eq.index, net, fees, slip)]}  # JS rounds
 
 
 def status() -> dict:
+    CHILDREN[:] = [c for c in CHILDREN if c.poll() is None]
     cfg = config.load()
     e = env()
     running = live.running_mode()
@@ -253,6 +260,8 @@ def status() -> dict:
         "config": {"mode": mode, "budget_krw": cfg.budget_krw, "paper_krw": cfg.paper_krw,
                    "markets": cfg.markets, "strategies": cfg.strategies, "claude_autopilot": cfg.claude_autopilot},
         "claude_set": bool(e.get("ANTHROPIC_API_KEY") or e.get("OPENAI_API_KEY")), "paused": live.pause_info(),
+        "claude_key_set": bool(e.get("ANTHROPIC_API_KEY")), "gpt_key_set": bool(e.get("OPENAI_API_KEY")),
+        "max_drawdown": cfg.risk.max_drawdown,
         "claude": json.loads(claude.REVIEW.read_text(encoding="utf-8")) if claude.REVIEW.exists() else None,
         "ai": {"rules": ai_trader.rulebook(), "journal": ai_trader._read(ai_trader.JOURNAL, [])[-5:][::-1],
                "paper_days": ai_trader.paper_days()} if "ai" in cfg.strategies else None,
@@ -295,8 +304,10 @@ def start(live_confirmed: bool) -> tuple[int, dict]:
               else {"start_new_session": True})  # keeps trading when this window closes
     out = Path("logs/run.out")
     before = out.stat().st_size if out.exists() else 0
+    CHILDREN[:] = [c for c in CHILDREN if c.poll() is None]  # reap bots that already exited (no zombies)
     with out.open("ab") as f:
         proc = subprocess.Popen(args, stdout=f, stderr=subprocess.STDOUT, env={**env(), "PYTHONUTF8": "1"}, **detach)
+    CHILDREN.append(proc)
     for _ in range(20):  # a bot that dies at once says why, here
         time.sleep(0.1)
         if proc.poll() is not None:
@@ -309,8 +320,15 @@ def review_now() -> tuple[int, dict]:
     _use_saved_keys()
     out = claude.run(config.load())
     if out is None:
-        return 400, {"error": "AI 검토를 하지 못했습니다. Claude 또는 GPT API 키와 인터넷 연결을 확인하세요."}
+        return 400, {"error": f"AI 검토를 하지 못했습니다: {claude.LAST_ERROR or 'Claude 또는 GPT API 키를 넣으세요'}."}
     return 200, out
+
+
+def resume_halt() -> tuple[int, dict]:
+    if live.running_pid():
+        return 409, {"error": "봇을 먼저 정지한 뒤 푸세요."}
+    cleared = live.clear_halt(config.load().mode)
+    return 200, {"cleared": cleared}
 
 
 def resume_entries() -> tuple[int, dict]:
@@ -369,7 +387,7 @@ class Handler(BaseHTTPRequestHandler):
         routes = {"/api/settings": lambda: save(body), "/api/check": lambda: (200, check(telegram=True)),
                   "/api/start": lambda: start(bool(body.get("live_confirmed"))), "/api/stop": stop,
                   "/api/claude/review": review_now, "/api/claude/approve": lambda: (200, {"status": claude.approve(config.load())}),
-                  "/api/entries/resume": resume_entries}
+                  "/api/entries/resume": resume_entries, "/api/halt/clear": resume_halt}
         if self.path not in routes:
             return self._send(404, {"error": "not found"})
         try:
