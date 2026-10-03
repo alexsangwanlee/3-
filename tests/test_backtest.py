@@ -104,3 +104,9 @@ def test_portfolio_is_equal_sub_accounts_without_rebalancing():
     b = pd.Series([0.00, 0.00], index=idx)  # sleeve b: flat
     r = backtest.portfolio({"a": a, "b": b})
     assert r.tolist() == pytest.approx([0.05, 1.105 / 1.05 - 1])  # mean equity 1.05, then 1.105
+
+
+def test_a_thin_coin_can_pay_more_slippage_than_the_rest():
+    df = prepare("hold", flat_bars([100] * 5))
+    res = backtest.run({"X": df, "THIN": df.copy()}, NO_GUARD, Costs(fee=0, slippage=0.002, per_market={"THIN": 0.01}))
+    assert res.equity.iloc[-1] == pytest.approx(0.5 / 1.002 + 0.5 / 1.01)  # each holds half, bought at its own fill

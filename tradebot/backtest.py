@@ -78,7 +78,7 @@ def run(frames: dict[str, pd.DataFrame], risk: Risk = Risk(), costs: Costs = Cos
     if risk.vol_reweight:
         size = size * inverse_vol_weights(col("vol"))
     days = idx.floor("D").asi8  # day keys; works for any datetime resolution
-    fee, slip = costs.fee, costs.slippage
+    fee, slip = costs.fee, np.array([costs.per_market.get(m, costs.slippage) for m in markets])
     alloc = risk.alloc_per_market or 1.0 / len(markets)
 
     n, T = len(markets), len(idx)
@@ -95,7 +95,7 @@ def run(frames: dict[str, pd.DataFrame], risk: Risk = Risk(), costs: Costs = Cos
 
     def sell(j, px, i, reason):
         nonlocal cash
-        fill = px * (1 - slip)
+        fill = px * (1 - slip[j])
         cash += qty[j] * fill * (1 - fee)
         trades.append((markets[j], idx[entry_i[j]], idx[i], entry_px[j], fill,
                        fill * (1 - fee) / (entry_px[j] * (1 + fee)) - 1, reason))
@@ -122,7 +122,7 @@ def run(frames: dict[str, pd.DataFrame], risk: Risk = Risk(), costs: Costs = Cos
                     px = max(o[j, i], es[j, i])
                 else:
                     continue
-                fill = px * (1 + slip)
+                fill = px * (1 + slip[j])
                 value = order_value(eq_open, cash, alloc, size[j, i], sd[j, i], fill, risk.risk_per_trade, fee)
                 if value <= capital * 1e-6:
                     continue

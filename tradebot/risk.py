@@ -1,6 +1,6 @@
 """Risk rules shared by the backtester and the live bot."""
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
@@ -32,6 +32,7 @@ def inverse_vol_weights(vol):
 class Costs:
     fee: float = 0.0005       # Upbit KRW market, per side
     slippage: float = 0.0005  # per side
+    per_market: dict = field(default_factory=dict)  # slippage overrides, e.g. thin coins (backtests)
 
 
 def order_value(equity: float, cash: float, alloc: float, size: float, stop_dist: float,
