@@ -1,9 +1,15 @@
-"""CLI: python -m tradebot {fetch,backtest,optimize,run}"""
+"""CLI: python -m tradebot {ui,check,report,run,fetch,optimize,backtest}"""
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit("Python 3.11 이상이 필요합니다 (지금 %d.%d). https://www.python.org/downloads/" % sys.version_info[:2])
+
 import argparse
 import dataclasses
 import json
 import logging
 import os
+import signal
 from pathlib import Path
 
 import pandas as pd
@@ -159,6 +165,12 @@ def cmd_check(cfg, args):
     print("준비 완료. 실행: python -m tradebot run" + (" --i-understand-the-risk" if cfg.mode == "live" else ""))
 
 
+def cmd_ui(cfg, args):
+    from .ui import serve
+
+    serve(args.port, not args.no_browser)
+
+
 def cmd_report(cfg, args):
     from .report import report
 
@@ -189,7 +201,7 @@ def refresh(cfg) -> list[tuple[str, dict, bool]]:
 
 
 def cmd_run(cfg, args):
-    from .live import Bot, BotConfig, UpbitBroker, notify, run_bots
+    from .live import PID_FILE, STOP, STOP_FILE, running_pid
     from .upbit import UpbitClient
 
     live = cfg.mode == "live"
@@ -200,11 +212,34 @@ def cmd_run(cfg, args):
         _, problems = diagnose(cfg, client, os.environ)
         if problems:
             raise SystemExit("python -m tradebot check 를 먼저 통과하세요:\n  " + "\n  ".join(problems))
+    if running_pid():  # two processes on the same ledgers would trade twice
+        raise SystemExit("봇이 이미 실행 중입니다 (state/bot.pid). 제어판이나 그 창에서 먼저 정지하세요.")
+    PID_FILE.parent.mkdir(exist_ok=True)
+    PID_FILE.write_text(str(os.getpid()))
+    STOP_FILE.unlink(missing_ok=True)
+
+    def on_signal(signum, frame):
+        if STOP.is_set():  # second Ctrl+C: stop right away
+            raise KeyboardInterrupt
+        logging.info("정지 요청을 받았습니다. 지금 단계를 마치고 저장한 뒤 멈춥니다 (한 번 더 누르면 즉시 종료).")
+        STOP.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, on_signal)
+    try:
+        _run_loop(cfg, args, live, client)
+    finally:
+        PID_FILE.unlink(missing_ok=True)
+        STOP_FILE.unlink(missing_ok=True)
+
+
+def _run_loop(cfg, args, live, client):
+    from .live import Bot, BotConfig, UpbitBroker, notify, run_bots, stop_requested
     from .report import report
 
     budget = cfg.budget_krw if live else cfg.paper_krw
     broker = UpbitBroker(client) if live else None  # paper: every sleeve gets its own simulated holdings
-    while True:
+    while not stop_requested():
         sleeves = refresh(cfg)
         if not args.once:  # weekly check against the plan's expected ranges
             notify("[tradebot] 주간 리포트\n" + "\n".join(report(cfg.mode, f"logs/{cfg.mode}_equity.csv")))
@@ -219,6 +254,7 @@ def cmd_run(cfg, args):
         notify(f"[tradebot] {cfg.mode} 시작, 예산 {budget:,.0f}원을 {len(bots)}개 전략에 나눔: "
                + ", ".join(f"{n}{'' if t else '(신규 진입 중단)'}" for n, _, t in sleeves))
         run_bots(bots, REOPTIMIZE_DAYS * 86400, cfg.poll_seconds)
+    notify(f"[tradebot] {cfg.mode} 정지했습니다.")
 
 
 def main():
@@ -227,6 +263,9 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check", help="verify config, API keys and alerts before running")
     sub.add_parser("report", help="live/paper results vs the plan's expected ranges, and the next step")
+    u = sub.add_parser("ui", help="open the control panel in the browser (settings, start/stop, status)")
+    u.add_argument("--port", type=int, default=8765)
+    u.add_argument("--no-browser", action="store_true")
     sub.add_parser("fetch", help="download/update candle history")
     b = sub.add_parser("backtest", help="backtest one strategy on the cached history")
     b.add_argument("--strategy", required=True, choices=list(STRATEGIES))
@@ -245,7 +284,7 @@ def main():
                         handlers=[logging.StreamHandler(), *(_file_handler() if args.cmd == "run" else [])])
     config.load_env()
     cfg = config.load(args.config)
-    {"check": cmd_check, "report": cmd_report, "fetch": cmd_fetch, "backtest": cmd_backtest, "optimize": cmd_optimize, "run": cmd_run}[args.cmd](cfg, args)
+    {"ui": cmd_ui, "check": cmd_check, "report": cmd_report, "fetch": cmd_fetch, "backtest": cmd_backtest, "optimize": cmd_optimize, "run": cmd_run}[args.cmd](cfg, args)
 
 
 def _file_handler():

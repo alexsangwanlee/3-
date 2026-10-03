@@ -1,6 +1,3 @@
 pandas>=2.1
 numpy>=1.26
 requests>=2.31
-pytest>=8  # tests only
-pyjwt>=2.8  # tests only (cross-checks the built-in JWT signer)
-scikit-learn>=1.4  # scripts/wonyotti_study.py only

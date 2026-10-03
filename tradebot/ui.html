@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tradebot 제어판</title>
+<style>
+:root {
+  --bg: #F4F6F4; --surface: #FFFFFF; --ink: #1B2422; --muted: #56625E; --rule: #D6DDD9;
+  --accent: #0E6B5E; --accent-ink: #FFFFFF; --up: #C8283F; --down: #2459C4; --ok: #2E7D4F; --warn: #8F5A00;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101816; --surface: #16211E; --ink: #E6ECE9; --muted: #A1AEA9; --rule: #2C3A35;
+    --accent: #4FB8A6; --accent-ink: #06201B; --up: #FF7486; --down: #7EA6FF; --ok: #6CC08F; --warn: #E3B04B;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+caption { text-align: left; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.6 "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+a { color: var(--accent); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.bar { display: flex; align-items: center; gap: 24px; max-width: 1040px; margin: 0 auto; padding: 14px 20px; }
+.brand { font-weight: 800; letter-spacing: -0.01em; }
+.bar nav { display: flex; gap: 4px; margin-left: auto; }
+.bar nav a { color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 6px; }
+.bar nav a:hover { color: var(--ink); background: var(--surface); }
+main { max-width: 1040px; margin: 0 auto; padding: 0 20px 64px; }
+section { padding-top: 8px; }
+h1 { font-size: 30px; line-height: 1.25; margin: 0; letter-spacing: -0.02em; }
+h2 { font-size: 17px; margin: 40px 0 12px; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.up { color: var(--up); } .down { color: var(--down); }
+
+/* the one bold element: the bot's state, said in a sentence */
+.hero { background: var(--surface); border-left: 6px solid var(--rule); padding: 28px 28px 24px; margin-top: 8px; }
+.hero[data-state="running"] { border-color: var(--accent); }
+.hero[data-state="live"] { border-color: var(--up); }
+.hero[data-state="warn"] { border-color: var(--warn); }
+.hero .title { display: flex; align-items: center; gap: 12px; }
+.pulse { width: 12px; height: 12px; border-radius: 50%; background: var(--rule); flex: none; }
+.hero[data-state="running"] .pulse, .hero[data-state="live"] .pulse { background: currentColor; animation: beat 2s ease-in-out infinite; }
+.hero[data-state="running"] .pulse { color: var(--accent); } .hero[data-state="live"] .pulse { color: var(--up); }
+@keyframes beat { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none !important; } }
+#state-sub { margin-top: 8px; color: var(--muted); max-width: 64ch; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 20px; }
+button {
+  font: inherit; font-weight: 700; min-height: 44px; padding: 0 20px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--rule); background: var(--surface); color: var(--ink);
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.stop { border-color: var(--ink); }
+button:disabled { opacity: .55; cursor: progress; }
+.confirm { display: flex; gap: 8px; align-items: center; font-weight: 700; color: var(--up); }
+.confirm input { width: 20px; height: 20px; }
+[role="status"]:not(:empty), [role="alert"]:not(:empty) { margin-top: 14px; }
+.problems { margin: 8px 0 0; padding-left: 20px; color: var(--warn); }
+
+.steps { margin: 20px 0 0; padding-left: 22px; max-width: 64ch; }
+.steps li { margin: 6px 0; }
+
+.grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 40px; }
+@media (max-width: 760px) { .grid { grid-template-columns: 1fr; gap: 0; } h1 { font-size: 24px; } .hero { padding: 20px; } }
+.check { list-style: none; padding: 0; margin: 0; }
+.check li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+.check li:last-child { border-bottom: 0; }
+.check .icon { flex: none; width: 1.2em; font-weight: 800; }
+.check .ok { color: var(--ok); } .check .warn { color: var(--warn); }
+
+.equity { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+figure { margin: 12px 0 0; position: relative; }
+#chart { width: 100%; height: 220px; display: block; }
+#chart.empty { height: 40px; }
+#chart text { fill: var(--muted); font-size: 12px; }
+.tip {
+  position: absolute; pointer-events: none; background: var(--ink); color: var(--bg);
+  padding: 6px 10px; border-radius: 6px; font-size: 13px; white-space: nowrap; transform: translate(-50%, -120%);
+}
+details { margin-top: 10px; }
+summary { cursor: pointer; color: var(--muted); }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--rule); }
+th { color: var(--muted); font-weight: 600; font-size: 13px; }
+td.num, th.num { text-align: right; }
+.empty { color: var(--muted); padding: 16px 0; }
+.scroll { overflow-x: auto; }
+
+form { background: var(--surface); padding: 24px 28px; }
+fieldset { border: 0; padding: 0; margin: 0 0 28px; }
+legend { font-weight: 700; font-size: 16px; margin-bottom: 8px; padding: 0; }
+.help { color: var(--muted); font-size: 14px; margin: 2px 0 10px; max-width: 70ch; }
+label.field { display: block; margin: 12px 0 4px; font-weight: 600; }
+input[type="text"], input[type="password"] {
+  font: inherit; width: 100%; max-width: 420px; min-height: 44px; padding: 0 12px;
+  border: 1px solid var(--rule); border-radius: 8px; background: var(--bg); color: var(--ink);
+}
+.choices { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.choice { display: flex; gap: 8px; align-items: flex-start; min-height: 32px; }
+.choice input { width: 18px; height: 18px; margin-top: 3px; }
+.form-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; max-height: 420px; }
+</style>
+</head>
+<body>
+<header class="bar">
+  <span class="brand">tradebot</span>
+  <nav aria-label="구역">
+    <a href="#now">현황</a><a href="#settings">설정</a><a href="#history">기록</a>
+  </nav>
+</header>
+<main>
+<section id="now" aria-labelledby="state-title">
+  <div class="hero" id="hero" data-state="idle">
+    <div class="title"><span class="pulse" aria-hidden="true"></span><h1 id="state-title">봇 상태를 불러오는 중입니다.</h1></div>
+    <p id="state-sub"></p>
+    <ol class="steps" id="steps" hidden>
+      <li>아래 설정은 기본값 그대로 두어도 됩니다. 모의매매는 실제 돈을 쓰지 않습니다.</li>
+      <li><b>모의매매 시작</b>을 누르고 28일 동안 지켜봅니다. 이 창을 닫아도 봇은 계속 돕니다.</li>
+      <li>이번 주 점검에 "Phase 1 진행 가능"이 뜨면, 업비트 키를 넣고 실거래로 바꿉니다.</li>
+    </ol>
+    <div class="actions">
+      <label class="confirm" id="confirm-wrap" hidden><input type="checkbox" id="live-confirm"> 실제 돈으로 매매합니다</label>
+      <button type="button" class="primary" id="toggle" disabled>시작</button>
+    </div>
+    <div id="action-msg" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <h2>이번 주 점검</h2>
+      <ul class="check" id="report"></ul>
+    </div>
+    <div>
+      <h2>내 장부</h2>
+      <p class="equity" id="equity">-</p>
+      <p class="muted" id="equity-sub"></p>
+      <figure>
+        <svg id="chart" role="img" aria-labelledby="chart-cap"></svg>
+        <div class="tip" id="tip" hidden></div>
+        <figcaption id="chart-cap" class="muted">날짜별 장부 금액</figcaption>
+        <details><summary>표로 보기</summary><div class="scroll"><table id="curve-table"></table></div></details>
+      </figure>
+    </div>
+  </div>
+
+  <h2>보유 중</h2>
+  <div class="scroll"><table id="positions"></table></div>
+</section>
+
+<section id="settings" aria-labelledby="settings-title">
+  <h2 id="settings-title">설정</h2>
+  <form id="form" novalidate>
+    <fieldset>
+      <legend>모드</legend>
+      <div class="choices">
+        <label class="choice"><input type="radio" name="mode" value="paper"> <span>모의매매: 실제 주문 없이 연습합니다</span></label>
+        <label class="choice"><input type="radio" name="mode" value="live"> <span>실거래: 업비트에서 실제로 사고팝니다</span></label>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>금액</legend>
+      <label class="field" for="paper_krw">모의매매 자금 (원)</label>
+      <input type="text" inputmode="numeric" id="paper_krw" name="paper_krw" autocomplete="off">
+      <label class="field" for="budget_krw">실거래에서 봇에게 맡길 금액 (원)</label>
+      <p class="help" id="budget-help">계좌의 나머지 돈은 건드리지 않습니다. 처음에는 목표 금액의 10~20%로 시작하고, 90일마다 점검을 통과하면 늘리세요.</p>
+      <input type="text" inputmode="numeric" id="budget_krw" name="budget_krw" autocomplete="off" aria-describedby="budget-help">
+    </fieldset>
+    <fieldset>
+      <legend>업비트 API 키 (실거래만)</legend>
+      <p class="help" id="key-help">업비트 → 마이페이지 → Open API 관리에서 발급합니다. 자산조회·주문조회·주문하기만 켜고 <b>출금은 끄세요</b>.
+        이 PC의 공인 IP를 등록해야 합니다. 저장한 키는 화면에 다시 보여주지 않습니다.</p>
+      <label class="field" for="UPBIT_ACCESS_KEY">Access 키</label>
+      <input type="password" id="UPBIT_ACCESS_KEY" name="UPBIT_ACCESS_KEY" autocomplete="off" aria-describedby="key-help">
+      <label class="field" for="UPBIT_SECRET_KEY">Secret 키</label>
+      <input type="password" id="UPBIT_SECRET_KEY" name="UPBIT_SECRET_KEY" autocomplete="off" aria-describedby="key-help">
+    </fieldset>
+    <fieldset>
+      <legend>알림 (선택)</legend>
+      <p class="help">텔레그램 @BotFather로 봇을 만들어 토큰을 받고, 그 봇에게 말을 건 뒤 chat id를 확인하세요. 매수·매도·손절과 주간 점검이 옵니다.</p>
+      <label class="field" for="TELEGRAM_BOT_TOKEN">텔레그램 봇 토큰</label>
+      <input type="password" id="TELEGRAM_BOT_TOKEN" name="TELEGRAM_BOT_TOKEN" autocomplete="off">
+      <label class="field" for="TELEGRAM_CHAT_ID">텔레그램 chat id</label>
+      <input type="text" id="TELEGRAM_CHAT_ID" name="TELEGRAM_CHAT_ID" autocomplete="off">
+    </fieldset>
+    <fieldset>
+      <legend>전략</legend>
+      <p class="help">예산을 고른 전략 수로 똑같이 나눠 각자 운용합니다. 검증 결과는 donchian과 ema_cross를 함께 쓸 때 가장 꾸준했습니다.</p>
+      <div class="choices" id="strategies"></div>
+    </fieldset>
+    <fieldset>
+      <legend>코인</legend>
+      <p class="help">검증한 5개 코인입니다. 고른 코인 수로 각 전략의 장부를 나눕니다.</p>
+      <div class="choices" id="markets"></div>
+    </fieldset>
+    <div class="form-actions">
+      <button type="submit" class="primary">설정 저장</button>
+      <button type="button" id="check">연결 점검</button>
+    </div>
+    <div id="form-msg" role="status" aria-live="polite"></div>
+  </form>
+</section>
+
+<section id="history" aria-labelledby="history-title">
+  <h2 id="history-title">최근 거래</h2>
+  <div class="scroll"><table id="trades"></table></div>
+  <details><summary>실행 기록 보기 (logs/bot.log)</summary><pre id="log"></pre></details>
+</section>
+</main>
+
+<script>
+const TOKEN = "__TOKEN__";
+const MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"];
+const $ = (s) => document.querySelector(s);
+let S = null, dirty = false;
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: { "X-Token": TOKEN, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = new Error(data.error || (data.errors || []).join(" ") || `오류 ${r.status}`);
+    e.data = data;
+    throw e;
+  }
+  return data;
+}
+const won = (n) => `${Math.round(n).toLocaleString("ko-KR")}원`;
+const pct = (x) => `${x > 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
+const el = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; };
+const tone = (x) => (x > 0 ? "up" : x < 0 ? "down" : "");
+
+function say(target, text, problems) {
+  const box = $(target);
+  box.replaceChildren(el("p", text));
+  if (problems && problems.length) {
+    const ul = el("ul", undefined, "problems");
+    problems.forEach((p) => ul.append(el("li", p)));
+    box.append(ul);
+  }
+}
+
+function table(id, head, rows, empty) {
+  const t = $(id);
+  t.replaceChildren();
+  if (!rows.length) { const cap = el("caption", empty, "empty"); t.append(cap); return; }
+  const tr = el("tr");
+  head.forEach(([label, num]) => tr.append(el("th", label, num ? "num" : "")));
+  t.append(el("thead")); t.tHead.append(tr);
+  const tb = el("tbody");
+  rows.forEach((cells) => {
+    const r = el("tr");
+    cells.forEach((c, i) => {
+      const td = el("td", c.text ?? c, head[i][1] ? "num" : "");
+      if (c.cls) td.classList.add(c.cls);
+      r.append(td);
+    });
+    tb.append(r);
+  });
+  t.append(tb);
+}
+
+function renderHero() {
+  const hero = $("#hero"), live = S.mode === "live";
+  const warn = S.report.some((l) => l.startsWith("점검 필요"));
+  hero.dataset.state = S.running ? (warn ? "warn" : live ? "live" : "running") : "idle";
+  $("#steps").hidden = !S.first_run;
+  const phase = S.report.find((l) => l.startsWith("Phase") || l.startsWith("증액") || l.startsWith("현재 예산")) || "";
+  let title, sub;
+  if (S.running) {
+    title = live ? "실제 돈으로 매매하고 있습니다." : "모의매매로 돌아가고 있습니다.";
+    sub = `${phase} 이 창을 닫아도 봇은 계속 돕니다.`.trim();
+  } else if (S.first_run) {
+    title = "처음이시네요. 모의매매부터 켜 보세요.";
+    sub = "실제 돈은 쓰지 않습니다. 5초면 시작됩니다.";
+  } else {
+    title = "멈춰 있습니다.";
+    sub = live ? "시작을 누르면 업비트에서 실제로 매매합니다." : "시작을 누르면 모의매매로 돌아갑니다.";
+  }
+  $("#state-title").textContent = title;
+  $("#state-sub").textContent = sub;
+  const btn = $("#toggle");
+  btn.disabled = false;
+  btn.textContent = S.running ? "정지" : live ? "실거래 시작" : "모의매매 시작";
+  btn.className = S.running ? "stop" : "primary";
+  $("#confirm-wrap").hidden = S.running || !live;
+}
+
+function renderReport() {
+  const ul = $("#report");
+  ul.replaceChildren();
+  S.report.forEach((line) => {
+    const warn = line.startsWith("점검 필요");
+    const li = el("li");
+    li.append(el("span", warn ? "!" : "✓", `icon ${warn ? "warn" : "ok"}`), el("span", line));
+    ul.append(li);
+  });
+  if (S.sleeves && Object.keys(S.sleeves).length) {
+    const off = Object.entries(S.sleeves).filter(([, v]) => !v.tradable).map(([k]) => k);
+    const li = el("li");
+    li.append(el("span", off.length ? "!" : "✓", `icon ${off.length ? "warn" : "ok"}`),
+      el("span", off.length ? `${off.join(", ")}: 최근 성과가 나빠 새 매수를 멈췄습니다. 보유분은 계속 관리합니다.`
+                            : `전략 ${Object.keys(S.sleeves).join(", ")} 모두 매매 중 (매주 자동 재조정)`));
+    ul.append(li);
+  }
+}
+
+function renderMoney() {
+  if (!S.funded) {
+    $("#equity").textContent = "-";
+    $("#equity-sub").textContent = "봇을 시작하면 장부가 만들어집니다.";
+  } else {
+    $("#equity").textContent = won(S.equity);
+    const sub = $("#equity-sub");
+    sub.replaceChildren(el("span", `맡긴 금액 ${won(S.funded)} 대비 `), el("span", pct(S.equity / S.funded - 1), tone(S.equity - S.funded)));
+  }
+  drawChart(S.curve);
+  table("#curve-table", [["날짜"], ["장부", true]], S.curve.slice().reverse().map(([d, v]) => [d, won(v)]), "아직 기록이 없습니다.");
+  table("#positions", [["전략"], ["코인"], ["평가금액", true], ["진입가", true], ["현재가", true], ["손익", true], ["손절가", true]],
+    S.positions.map((p) => [p.strategy, p.market, won(p.value), Math.round(p.entry).toLocaleString("ko-KR"),
+      Math.round(p.price).toLocaleString("ko-KR"), { text: pct(p.pnl), cls: tone(p.pnl) },
+      p.stop ? Math.round(p.stop).toLocaleString("ko-KR") : "-"]),
+    "지금은 보유한 코인이 없습니다. 신호가 오면 봇이 알아서 삽니다.");
+}
+
+function drawChart(points) {
+  const svg = $("#chart"), tip = $("#tip");
+  svg.replaceChildren();
+  tip.hidden = true;
+  const ns = "http://www.w3.org/2000/svg";
+  const mk = (tag, attrs) => { const n = document.createElementNS(ns, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
+  svg.classList.toggle("empty", points.length < 2);
+  const W = svg.clientWidth || 600, H = points.length < 2 ? 40 : 220, L = 8, R = 8, T = 16, B = 26;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (points.length < 2) {
+    const t = mk("text", { x: 0, y: 24 });
+    t.textContent = "하루 이상 돌리면 여기에 장부 금액 변화가 그려집니다.";
+    svg.append(t);
+    return;
+  }
+  const vs = points.map((p) => p[1]);
+  const lo = Math.min(...vs), hi = Math.max(...vs), span = hi - lo || 1;
+  const x = (i) => L + (i / (points.length - 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / span) * (H - T - B);
+  const css = getComputedStyle(document.documentElement);
+  svg.append(mk("line", { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: css.getPropertyValue("--rule"), "stroke-width": 1 }));
+  svg.append(mk("path", { d: points.map((p, i) => `${i ? "L" : "M"}${x(i)},${y(p[1])}`).join(""), fill: "none",
+    stroke: css.getPropertyValue("--accent"), "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  const label = (txt, xx, yy, anchor) => { const t = mk("text", { x: xx, y: yy, "text-anchor": anchor }); t.textContent = txt; svg.append(t); };
+  label(points[0][0], L, H - 8, "start");
+  label(points[points.length - 1][0], W - R, H - 8, "end");
+  label(won(hi), L, T - 4, "start");
+  const cross = mk("line", { y1: T, y2: H - B, stroke: css.getPropertyValue("--muted"), "stroke-width": 1, visibility: "hidden" });
+  const dot = mk("circle", { r: 5, fill: css.getPropertyValue("--accent"), stroke: css.getPropertyValue("--surface"), "stroke-width": 2, visibility: "hidden" });
+  svg.append(cross, dot);
+  svg.onpointermove = (ev) => {
+    const box = svg.getBoundingClientRect();
+    const i = Math.max(0, Math.min(points.length - 1, Math.round(((ev.clientX - box.left) / box.width * W - L) / (W - L - R) * (points.length - 1))));
+    const [d, v] = points[i];
+    for (const n of [cross, dot]) n.setAttribute("visibility", "visible");
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i));
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(v));
+    tip.hidden = false;
+    tip.textContent = `${d}  ${won(v)}`;
+    tip.style.left = `${(x(i) / W) * box.width}px`;
+    tip.style.top = `${(y(v) / H) * box.height}px`;
+  };
+  svg.onpointerleave = () => { tip.hidden = true; for (const n of [cross, dot]) n.setAttribute("visibility", "hidden"); };
+}
+
+function renderHistory() {
+  table("#trades", [["시각"], ["전략"], ["코인"], ["구분"], ["가격", true], ["이유"], ["손익", true]],
+    S.trades.map((t) => [String(t.time).slice(0, 16).replace("T", " "), t.strategy || "-", t.market,
+      t.side === "buy" ? "매수" : "매도", Math.round(t.price).toLocaleString("ko-KR"), REASONS[t.reason] || t.reason,
+      t.pnl === "" ? "-" : { text: pct(Number(t.pnl)), cls: tone(Number(t.pnl)) }]),
+    "아직 거래가 없습니다. 추세 신호를 기다리는 중이며, 며칠씩 거래가 없는 것도 정상입니다.");
+  $("#log").textContent = S.log.length ? S.log.join("\n") : "아직 기록이 없습니다.";
+}
+const LABELS = { donchian: "donchian · 신고가 돌파 (추천)", ema_cross: "ema_cross · 이평 교차 (추천)",
+  vbo: "vbo · 변동성 돌파 (검증 결과 손실)", rsi_mr: "rsi_mr · 역추세 (검증 결과 손실)" };
+const REASONS = { enter: "신호 매수", breakout: "돌파 매수", exit: "신호 매도", stop: "손절·수익 지키기",
+  daily_loss: "하루 손실 한도", daily_target: "하루 목표", max_drawdown: "비상 정지" };
+
+function fillForm() {
+  const f = $("#form"), c = S.config;
+  f.querySelector(`input[name=mode][value=${c.mode}]`).checked = true;
+  $("#paper_krw").value = Math.round(c.paper_krw).toLocaleString("ko-KR");
+  $("#budget_krw").value = Math.round(c.budget_krw).toLocaleString("ko-KR");
+  $("#UPBIT_ACCESS_KEY").placeholder = $("#UPBIT_SECRET_KEY").placeholder = S.keys_set ? "저장됨 (바꿀 때만 새로 입력)" : "붙여 넣기";
+  $("#TELEGRAM_BOT_TOKEN").placeholder = S.telegram_set ? "저장됨 (바꿀 때만 새로 입력)" : "선택";
+  const boxes = (id, name, all, chosen) => {
+    const wrap = $(id);
+    wrap.replaceChildren();
+    all.forEach((v) => {
+      const lab = el("label", undefined, "choice"), inp = el("input");
+      inp.type = "checkbox"; inp.name = name; inp.value = v; inp.checked = chosen.includes(v);
+      lab.append(inp, el("span", LABELS[v] || v));
+      wrap.append(lab);
+    });
+  };
+  boxes("#strategies", "strategies", ["donchian", "ema_cross", "vbo", "rsi_mr"].filter((s) => S.all_strategies.includes(s)), c.strategies);
+  boxes("#markets", "markets", [...new Set([...MARKETS, ...c.markets])], c.markets);
+}
+
+function render() {
+  renderHero();
+  renderReport();
+  renderMoney();
+  renderHistory();
+  if (!dirty) fillForm();
+}
+
+async function refresh() {
+  try {
+    S = await api("/api/status");
+    render();
+  } catch (e) {
+    $("#state-title").textContent = "제어판이 봇과 연결되지 않았습니다.";
+    $("#state-sub").textContent = "터미널에서 python -m tradebot ui 를 다시 실행하세요.";
+  }
+}
+
+$("#form").addEventListener("input", () => { dirty = true; });
+$("#form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const body = {
+    mode: f.get("mode"), paper_krw: f.get("paper_krw"), budget_krw: f.get("budget_krw"),
+    strategies: f.getAll("strategies"), markets: f.getAll("markets"),
+  };
+  for (const k of ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]) {
+    if (f.get(k)) body[k] = f.get(k);
+  }
+  try {
+    const r = await api("/api/settings", body);
+    for (const k of ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "TELEGRAM_BOT_TOKEN"]) $(`#${k}`).value = "";
+    dirty = false;
+    say("#form-msg", r.restart_needed ? "설정을 저장했습니다. 봇이 돌고 있어서, 정지 후 다시 시작해야 적용됩니다." : "설정을 저장했습니다.");
+    refresh();
+  } catch (e) {
+    say("#form-msg", "저장하지 못했습니다. 아래를 고쳐 주세요.", e.data?.errors || [e.message]);
+  }
+});
+$("#check").addEventListener("click", async () => {
+  say("#form-msg", "업비트와 연결을 확인하는 중입니다.");
+  try {
+    const r = await api("/api/check", {});
+    say("#form-msg", r.problems.length ? "고칠 것이 있습니다." : "모두 정상입니다.", [...r.problems, ...r.ok.map((o) => `확인됨: ${o}`)]);
+  } catch (e) { say("#form-msg", e.message); }
+});
+$("#toggle").addEventListener("click", async () => {
+  const btn = $("#toggle");
+  btn.disabled = true;
+  try {
+    if (S.running) {
+      await api("/api/stop", {});
+      say("#action-msg", "정지를 요청했습니다. 지금 단계를 마치고 저장한 뒤 10초 안에 멈춥니다.");
+    } else {
+      await api("/api/start", { live_confirmed: $("#live-confirm").checked });
+      say("#action-msg", "시작했습니다. 첫 신호 계산까지 10~20초 걸립니다.");
+    }
+  } catch (e) {
+    say("#action-msg", e.message, e.data?.problems);
+  }
+  setTimeout(refresh, 1500);
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

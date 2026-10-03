@@ -4,6 +4,8 @@ import json
 import logging
 import math
 import os
+import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +20,37 @@ from .upbit import UpbitClient
 
 log = logging.getLogger("tradebot")
 MIN_ORDER_KRW = 5000
+PID_FILE = Path("state/bot.pid")
+STOP_FILE = Path("state/stop.request")  # the control panel's stop button: finish the step, save, exit
+STOP = threading.Event()                # Ctrl+C / SIGTERM do the same
+
+
+def stop_requested() -> bool:
+    return STOP.is_set() or STOP_FILE.exists()
+
+
+def _alive(pid: int) -> bool:
+    """Is `pid` a running tradebot? (Never os.kill(pid, 0): on Windows that terminates the process.)"""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            return "python" in out.lower()  # ponytail: image name only; a reused PID of another python looks alive
+        proc = Path(f"/proc/{pid}/cmdline")
+        if proc.exists():
+            return b"tradebot" in proc.read_bytes()
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+        return "tradebot" in out
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def running_pid() -> int | None:
+    try:
+        pid = int(PID_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    return pid if _alive(pid) else None
 
 
 def notify(text: str) -> None:
@@ -290,7 +323,7 @@ def run_bots(bots: list[Bot], seconds: float, poll_seconds: int) -> None:
     for b in bots:
         log.info("sleeve %s: params=%s entries=%s", b.cfg.strategy, b.cfg.params, b.cfg.allow_entries)
     end, failing = time.time() + seconds, set()
-    while time.time() < end:
+    while time.time() < end and not stop_requested():
         for b in bots:
             try:
                 b.step()
@@ -300,4 +333,4 @@ def run_bots(bots: list[Bot], seconds: float, poll_seconds: int) -> None:
                 if b.cfg.strategy not in failing:
                     notify(f"[tradebot] {b.cfg.strategy} 오류, 재시도 중 (logs/bot.log 확인)")
                 failing.add(b.cfg.strategy)
-        time.sleep(poll_seconds)
+        STOP.wait(poll_seconds)

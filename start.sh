@@ -1,14 +1,16 @@
 #!/usr/bin/env sh
-# Mac/Linux: ./start.sh            (실거래: config.toml 에서 mode = "live" 후 ./start.sh --i-understand-the-risk)
+# 제어판(브라우저)으로 시작: ./start.sh        서버에서 바로 실행: ./start.sh run [--i-understand-the-risk]
 set -e
 cd "$(dirname "$0")"
+command -v python3 >/dev/null || { echo "Python 3.11 이상이 필요합니다: https://www.python.org/downloads/"; exit 1; }
 [ -d .venv ] || python3 -m venv .venv
 . .venv/bin/activate
-pip install -q -r requirements.txt
+echo "필요한 프로그램을 확인하는 중입니다 (처음 한 번만 1~2분)..."
+pip install -q --disable-pip-version-check -r requirements.txt
 [ -f config.toml ] || cp config.example.toml config.toml
-if [ ! -f .env ]; then
-  cp .env.example .env && chmod 600 .env
-  echo ".env 를 만들었습니다. 실거래를 하려면 API 키를 넣으세요 (모의매매는 그대로 실행됩니다)."
+if [ "$1" = "run" ]; then
+  shift
+  python -m tradebot check
+  exec python -m tradebot run "$@"
 fi
-python -m tradebot check
-exec python -m tradebot run "$@"
+exec python -m tradebot ui

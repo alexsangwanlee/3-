@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8
+pyjwt>=2.8         # tests cross-check the built-in JWT signer
+scikit-learn>=1.4  # scripts/wonyotti_study.py
