@@ -91,11 +91,17 @@
       "idea": "confirmation 4 of 4, or 3 of 3 with any rule dropped",
       "result": "too strict, +14% to +125%",
       "file": "results/edge_study.md"
+    },
+    {
+      "idea": "wider universe: top 10/20 coins by 30-day KRW turnover instead of 5 fixed coins",
+      "result": "dev +9.8% / +1.9% vs +197% for the 5 coins (with confirmation), 2nd half negative; despite survivorship bias in its favour",
+      "file": "results/data_study.md"
     }
   ],
   "pending": [
-    "wider universe (top 10/20 by turnover), LightGBM filter on ~24 features, Kronos-small forecast filter: results/data_study.md",
-    "ai sleeve (Claude/GPT propose + cross-review, shared rulebook): untested. LLM decisions cannot be backtested honestly (the models saw the prices in training); judge only from forward paper results, 28 days minimum before live"
+    "LightGBM filter on ~24 features, Kronos-small forecast filter: results/data_study.md",
+    "ai sleeve (Claude/GPT propose + cross-review, shared rulebook): untested. LLM decisions cannot be backtested honestly (the models saw the prices in training); judge only from forward paper results, 28 days minimum before live",
+    "surge coins: 5 core coins + coins whose turnover jumped >= 5x (top 20 that day) in the last 7 days, same rules: results/surge_study.md"
   ],
   "costs": "fees + slippage take ~14% of gross profit (+196.7% before costs -> +168.4% after, 2022-04..2026-03); about half each",
   "goal": "maximum net profit after fees and slippage, with the worst drawdown kept above -30% (kill switch at -35%); not a daily target"

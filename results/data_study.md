@@ -57,4 +57,35 @@ e.g. LUNA) cannot be downloaded, so V1 never holds the coins that went to zero.
 
 ## Results
 
-(filled in after the run)
+### V2: data gates (registered rule: Sharpe vs the baseline without confirmation)
+
+| variant | result | verdict |
+|---|---|---|
+| V2a Fear & Greed ≥ 80 | Sharpe 1.44 -> 1.39 | reject |
+| V2b BTC funding > 0.03% per 8h | Sharpe 1.44 -> 1.47, below the +0.10 bar | reject |
+| V2c kimchi premium > 5% | Sharpe 1.80, but the 1st half is worse; the gain came from one quarter through a different parameter path, not from the gate | reject (watch) |
+
+### V1: wider universe (top 10 / 20 by trailing 30-day KRW turnover, re-ranked daily)
+
+Run with `scripts/universe_study.py`.
+
+| variant | dev total | Sharpe | halves (Sharpe) | dev CAGR | CAGR halves | dev MDD | lockbox | verdict |
+|---|---|---|---|---|---|---|---|---|
+| **baseline 5 coins, as registered (no confirmation)** | +167.1% | 1.44 | 1.62 / 1.23 | +27.8% | +34.2% / +21.8% | -16.0% | +0.5% | |
+| top 10 by turnover, as registered (no confirmation) | +30.6% | 0.64 | 1.12 / -0.09 | +6.9% | +15.6% / -1.1% | -17.2% | -3.5% | reject (Sharpe +0.10, both halves) |
+| top 20 by turnover, as registered (no confirmation) | +1.1% | 0.07 | 0.91 / -0.95 | +0.3% | +8.3% / -7.2% | -20.1% | +0.0% | reject (Sharpe +0.10, both halves, MDD) |
+| **baseline 5 coins, today's rules (confirmation)** | +197.1% | 1.80 | 1.88 / 1.70 | +31.3% | +34.5% / +28.1% | -9.9% | +6.5% | |
+| top 10 by turnover, today's rules (confirmation) | +9.8% | 0.31 | 0.63 / -0.11 | +2.4% | +6.0% / -1.1% | -16.0% | +2.6% | reject (higher CAGR, both halves) |
+| top 20 by turnover, today's rules (confirmation) | +1.9% | 0.10 | 0.58 / -0.49 | +0.5% | +4.3% / -3.2% | -15.4% | +3.3% | reject (higher CAGR, both halves) |
+
+**Verdict: rejected in both forms, by a wide margin, even though survivorship bias works in its favour.**
+- With today's rules, the top-10 universe makes +9.8% on the development period against +197.1% for the 5 coins, and loses
+  money in the second half. The top-20 universe is flat.
+- The same breakout and trend rules that pay on the 5 large coins lose on the coins that rotate into the turnover ranking.
+  A reading of the numbers, not a separate test: a coin usually enters the top 10 because of a burst of trading, often near
+  its top, and its breakouts fail more often.
+- The script printed the lockbox for every row; it played no part in the verdicts (no variant passed the development rule).
+
+### V3, V4
+
+Not run yet. The Kronos forecasts are about two thirds done (`scripts/kronos_forecasts.py` is resumable).
