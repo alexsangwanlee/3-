@@ -263,7 +263,7 @@ class Bot:
     def _refresh_candles(self, now: float) -> None:
         if now - self.last_refresh < 60 and self.candles:
             return
-        for m in self.cfg.markets:
+        for m in dict.fromkeys([*self.cfg.markets, "KRW-BTC"]):  # BTC: the entry confirmation needs it
             try:
                 self._load_candles(m)
             except Exception as e:  # that market gets no new entries until it answers again
@@ -306,7 +306,8 @@ class Bot:
         if df.index[-1] < bar:  # no trade yet in the current bar
             df = pd.concat([df, pd.DataFrame({"open": price, "high": price, "low": price, "close": price,
                                               "volume": 0.0}, index=[bar])])
-        prepared = prepare(self.cfg.strategy, regularize(df, self.cfg.timeframe), self.cfg.params)
+        btc = self.candles["KRW-BTC"]["close"]  # missing -> this market gets no signal this step (never unconfirmed)
+        prepared = prepare(self.cfg.strategy, regularize(df, self.cfg.timeframe), self.cfg.params, btc=btc)
         return prepared.iloc[-1]
 
     # -- trading ---------------------------------------------------------
@@ -396,7 +397,7 @@ class Bot:
         return self.state["cash"] + sum(p["qty"] * prices.get(m, p.get("last", p["entry"]))
                                         for m, p in self.state["positions"].items())
 
-    def _cash(self, prices: dict[str, float]) -> float:
+    def _cash(self) -> float:
         return max(0.0, min(self.state["cash"], self.broker.available_krw()))
 
     def step(self, now: pd.Timestamp | None = None) -> None:
@@ -466,7 +467,7 @@ class Bot:
                     reason = "breakout"
                 else:
                     continue
-                krw = order_value(eq, self._cash(prices), alloc, row["size"] * weight[m], row["stop_dist"], price,
+                krw = order_value(eq, self._cash(), alloc, row["size"] * weight[m], row["stop_dist"], price,
                                   self.cfg.risk.risk_per_trade, self.cfg.costs.fee)
                 # a buy that failed before reaching the exchange is retried on the next poll
                 if krw < MIN_ORDER_KRW or attempt(self._order, "buy", m, krw, price,

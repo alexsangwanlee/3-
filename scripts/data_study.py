@@ -87,8 +87,8 @@ def gated_wf(fr, name, gate=None, risk=CFG.risk):
         return walk_forward(fr, name, risk, CFG.costs, CFG.train_days, CFG.test_days)
     orig, by_id = optimize.prepare, {id(df): gate[m] for m, df in fr.items()}
 
-    def prep(n, df, p):
-        out = orig(n, df, p)
+    def prep(n, df, p, **kw):
+        out = orig(n, df, p, **kw)
         g = by_id.get(id(df))
         if g is not None:
             out["enter"] &= g.to_numpy()
@@ -301,7 +301,6 @@ def main(which):
         lines.append(row(f"V4 Kronos-small filter ({len(k)} forecasts)", s, verdict(s, base, tr_auc)
                          + f"; AUC trades {tr_auc:.3f}, 24h {auc(k.to_numpy(), (real > 0).to_numpy()):.3f}"))
         print(lines[-1], flush=True)
-    Path("results/data_study_table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
 
 

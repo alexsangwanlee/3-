@@ -24,5 +24,5 @@ def job(args):
 if __name__ == "__main__":
     names = sys.argv[1:] or ["donchian"]
     with ProcessPoolExecutor(8) as ex:
-        for name, label, m in ex.map(job, [(n, l) for n in names for l in VARIANTS]):
+        for name, label, m in ex.map(job, [(n, v) for n in names for v in VARIANTS]):
             print(f"| {name} | {label} | {m['total_return']:+.1%} | {m['cagr']:+.1%} | {m['avg_daily']:+.3%} | {m['sharpe']:.2f} | {m['max_drawdown']:.1%} | {m['days_ge_3pct']:.1%} |", flush=True)

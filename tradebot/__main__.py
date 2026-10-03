@@ -22,8 +22,15 @@ from . import backtest, config, data
 from .optimize import best_params, walk_forward
 from .strategies import STRATEGIES, prepare
 
+BTC = "KRW-BTC"
+
 def _frames(cfg: config.Config, offline: bool = True) -> dict[str, pd.DataFrame]:
     return {m: data.load(m, cfg.timeframe, cfg.history_days, offline=offline) for m in cfg.markets}
+
+
+def _btc(cfg: config.Config) -> pd.Series:
+    """BTC closes for the entry confirmation, whether or not BTC is traded."""
+    return data.load(BTC, cfg.timeframe, cfg.history_days, offline=True)["close"]
 
 
 def _row(name: str, m: dict) -> str:
@@ -37,7 +44,7 @@ HEADER = ("| strategy | total | CAGR | avg/day | median/day | Sharpe | MDD | tra
 
 
 def cmd_fetch(cfg, args):
-    for m in cfg.markets:
+    for m in dict.fromkeys([*cfg.markets, BTC]):  # BTC is always needed for the entry confirmation
         df = data.load(m, cfg.timeframe, cfg.history_days)
         print(f"{m}: {len(df)} bars {df.index[0]} -> {df.index[-1]}")
 
@@ -50,7 +57,7 @@ def cmd_backtest(cfg, args):
     frames = _frames(cfg)
     risk = _no_guard(cfg.risk) if args.no_guard else cfg.risk
     params = json.loads(args.params) if args.params else {}
-    res = backtest.run({m: prepare(args.strategy, df, params) for m, df in frames.items()}, risk, cfg.costs)
+    res = backtest.run({m: prepare(args.strategy, df, params, btc=_btc(cfg)) for m, df in frames.items()}, risk, cfg.costs)
     print(HEADER)
     print(_row(args.strategy, res.metrics()))
     if args.trades:
@@ -60,7 +67,7 @@ def cmd_backtest(cfg, args):
 def cmd_optimize(cfg, args):
     from .learn import learned_slippage, review
 
-    frames = _frames(cfg)
+    frames, btc = _frames(cfg), _btc(cfg)
     if args.no_guard:
         cfg.risk = _no_guard(cfg.risk)
     slip = learned_slippage("logs/live_trades.csv")
@@ -71,7 +78,7 @@ def cmd_optimize(cfg, args):
     results = {}
     print(f"walk-forward: train {cfg.train_days}d / test {cfg.test_days}d, markets={cfg.markets}")
     for name in names:
-        results[name] = walk_forward(frames, name, cfg.risk, cfg.costs, cfg.train_days, cfg.test_days)
+        results[name] = walk_forward(frames, name, cfg.risk, cfg.costs, cfg.train_days, cfg.test_days, btc=btc)
         logging.info("optimize: %s done", name)
     first_test = min(r["oos_returns"].index[0] for r in results.values())
     bench = backtest.run({m: prepare("hold", df) for m, df in frames.items()},
@@ -88,7 +95,7 @@ def cmd_optimize(cfg, args):
 
     sleeves = {}
     for s in cfg.strategies:
-        params, train_sharpe = best_params(frames, s, cfg.risk, cfg.costs, cfg.train_days)
+        params, train_sharpe = best_params(frames, s, cfg.risk, cfg.costs, cfg.train_days, btc=btc)
         oos = results[s]["metrics"]
         # same rule as the walk-forward: nothing worked -> no new entries for this sleeve
         sleeves[s] = {"params": params, "tradable": bool(oos["sharpe"] > 0 and train_sharpe > 0),

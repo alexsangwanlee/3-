@@ -52,4 +52,36 @@ E5 is a non-inferiority test. Its benefit (not trading at the same moment as eve
 
 ## Results
 
-(filled in after the run)
+Run once, as registered (`scripts/edge_study.py`). Columns are the development period unless noted.
+
+| variant | dev total | dev CAGR | CAGR halves | Sharpe | dev MDD | lockbox | verdict |
+|---|---|---|---|---|---|---|---|
+| baseline | +167.1% | +27.8% | +34.2% / +21.8% | 1.44 | -16.0% | +0.5% | |
+| E1 skip trades fees would eat | +139.5% | +24.4% | +30.7% / +18.4% | 1.33 | -16.9% | +1.9% | reject |
+| **E2 confirmed entries (3 of 4)** | **+197.1%** | **+31.3%** | +34.5% / +28.1% | **1.80** | **-9.9%** | **+6.5%** | **PASS, lockbox ok: adopted** |
+| E3 choose parameters by CAGR | +171.0% | +28.3% | +35.7% / +21.3% | 1.34 | -16.5% | +1.4% | reject (2nd half) |
+| E4 risk 2% per trade | +170.2% | +28.2% | +32.4% / +24.1% | 1.39 | -17.9% | +0.0% | reject (1st half) |
+| (reference: 4h rebuilt from 1h, same clock) | +167.1% | +27.8% | +34.2% / +21.8% | 1.44 | -16.0% | +0.4% | |
+| E5 clock shifted by 2 hours | +91.6% | +17.6% | +24.7% / +11.0% | 1.05 | -16.5% | +2.0% | reject |
+
+**What it means**
+- **Fees.** Skipping trades with tight stops (E1) removed good trades along with expensive ones. Costs are better cut by trading less often in bad conditions, which is what E2 does: 311 trades instead of 478 over the whole period.
+- **Confirmed entries (E2), adopted.** It is the only variant that raised profit in both halves.
+  - It also cut the worst drawdown from -16% to -10%, and it was the best in the lockbox.
+  - It is now in `strategies.prepare()`, so the backtest, the weekly re-optimisation and live trading all use it.
+  - Full period with the new rule: +216%, CAGR +29.1%, Sharpe 1.75, MDD -9.9% (before: +165%, 24.2%, 1.33, -16.0%).
+- **More profit by more risk (E4) or by choosing parameters for profit (E3)** did not hold up in one of the halves. The risk limits stay as they are.
+- **Not trading on everyone's clock (E5)** is rejected, but the run showed something more important about the bot itself. Shifting the 4h bars cut the old bot's return to +92–155%, depending on the shift. Part of the headline result depends on using Upbit's own 00/04/08… UTC bars, which start at 09:00 KST.
+
+**Robustness checks** (run after the verdict and not used to choose)
+
+| check | dev total | Sharpe | dev MDD | lockbox |
+|---|---|---|---|---|
+| old bot, clock +1h / +2h / +3h | +154.9% / +91.6% / +127.6% | 1.44 / 1.05 / 1.22 | -12.3% / -16.5% / -16.7% | +3.3% / +2.0% / +1.0% |
+| **E2 on the +2h clock** | **+123.8%** | **1.41** | **-12.6%** | **+7.6%** |
+| E2 with 2 of 4 / 4 of 4 | +164.0% / +18.1% | 1.48 / 0.72 | -14.5% / -4.7% | +6.8% / +0.0% |
+| E2 dropping one rule (the other 3 all required): trend / BTC / volume / not chasing | +14% / +45% / +30% / +125% | 0.53 / 1.15 / 0.74 / 1.71 | | |
+
+- E2's gain holds on a shifted clock: +124% against the old bot's +92% on that clock. So it is not an artifact of bar alignment.
+- 4 of 4 is too strict, and every single rule carries weight.
+- The sharp drop from 3 of 4 to 4 of 4 is a reason to keep watching live results against the plan's normal ranges.

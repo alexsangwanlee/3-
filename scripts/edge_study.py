@@ -24,7 +24,7 @@ def wf(fr, name, transform=None, risk=CFG.risk):
     if transform is None:
         return optimize.walk_forward(fr, name, risk, CFG.costs, CFG.train_days, CFG.test_days)
     orig, market_of = optimize.prepare, {id(df): m for m, df in fr.items()}
-    optimize.prepare = lambda n, df, p: transform(orig(n, df, p), market_of.get(id(df)))
+    optimize.prepare = lambda n, df, p, **kw: transform(orig(n, df, p, **kw), market_of.get(id(df)))
     try:
         return optimize.walk_forward(fr, name, risk, CFG.costs, CFG.train_days, CFG.test_days)
     finally:
@@ -132,8 +132,6 @@ def main():
     report("E5", "E5 clock shifted by 2 hours", run(shifted_frames(2)), non_inf=True)
 
     print("\n".join(lines))
-    with open("results/edge_study_table.md", "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":

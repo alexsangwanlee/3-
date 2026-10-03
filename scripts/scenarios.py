@@ -26,9 +26,9 @@ def frames(cfg, markets=None):
     return {m: data.load(m, cfg.timeframe, cfg.history_days, offline=True) for m in markets or cfg.markets}
 
 
-def delayed(name, df, params=None):
+def delayed(name, df, params=None, **kw):
     """Every order one bar late: a slow PC, a network outage, a missed poll."""
-    out = strategies.prepare(name, df, params)
+    out = strategies.prepare(name, df, params, **kw)
     for c in ("enter", "exit"):
         out[c] = out[c].shift(1, fill_value=False)
     out["entry_stop"] = out["entry_stop"].shift(1)
@@ -52,7 +52,9 @@ def variant(args):
     elif kind == "nogiveback":
         risk = dataclasses.replace(risk, lock_gain=None)
     f = frames(cfg, markets)
-    rets = {n: optimize.walk_forward(f, n, risk, costs, cfg.train_days, cfg.test_days)["oos_returns"] for n in names}
+    btc = data.load("KRW-BTC", cfg.timeframe, cfg.history_days, offline=True)["close"]  # entry confirmation, as live
+    rets = {n: optimize.walk_forward(f, n, risk, costs, cfg.train_days, cfg.test_days, btc=btc)["oos_returns"]
+            for n in names}
     return label, backtest.portfolio(rets)
 
 

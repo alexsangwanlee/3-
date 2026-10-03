@@ -26,13 +26,13 @@ def score(res: backtest.Result, min_trades: int) -> float:
 
 
 def walk_forward(frames: dict[str, pd.DataFrame], name: str, risk: Risk = Risk(), costs: Costs = Costs(),
-                 train_days: int = 180, test_days: int = 60, min_trades: int = 10) -> dict:
+                 train_days: int = 180, test_days: int = 60, min_trades: int = 10, btc: pd.Series | None = None) -> dict:
     grid = combos(name) or [{}]
     index = next(iter(frames.values())).index
     wins = list(windows(index, train_days, test_days))
     scores = np.full((len(grid), len(wins)), -np.inf)
     for gi, params in enumerate(grid):
-        prepared = {m: prepare(name, df, params) for m, df in frames.items()}
+        prepared = {m: prepare(name, df, params, btc=btc) for m, df in frames.items()}
         for wi, (a, b, _) in enumerate(wins):
             scores[gi, wi] = score(backtest.run(prepared, risk, costs, start=a, end=b), min_trades)
 
@@ -45,7 +45,7 @@ def walk_forward(frames: dict[str, pd.DataFrame], name: str, risk: Risk = Risk()
             parts.append(pd.Series(0.0, index=days))
             chosen.append({"test_start": str(b.date()), "params": None, "train_sharpe": best})
             continue
-        prepared = {m: prepare(name, df, grid[gi]) for m, df in frames.items()}
+        prepared = {m: prepare(name, df, grid[gi], btc=btc) for m, df in frames.items()}
         res = backtest.run(prepared, risk, costs, start=b, end=c)
         parts.append(res.daily_returns())
         trades.append(res.trades)
@@ -57,13 +57,13 @@ def walk_forward(frames: dict[str, pd.DataFrame], name: str, risk: Risk = Risk()
 
 
 def best_params(frames: dict[str, pd.DataFrame], name: str, risk: Risk, costs: Costs,
-                train_days: int = 180, min_trades: int = 10) -> tuple[dict, float]:
+                train_days: int = 180, min_trades: int = 10, btc: pd.Series | None = None) -> tuple[dict, float]:
     """Parameters to trade from now on: best Sharpe on the most recent `train_days`."""
     index = next(iter(frames.values())).index
     start = index[-1] - pd.Timedelta(days=train_days)
     best, best_score = {}, -np.inf
     for params in combos(name) or [{}]:
-        prepared = {m: prepare(name, df, params) for m, df in frames.items()}
+        prepared = {m: prepare(name, df, params, btc=btc) for m, df in frames.items()}
         s = score(backtest.run(prepared, risk, costs, start=start), min_trades)
         if s > best_score:
             best, best_score = params, s

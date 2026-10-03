@@ -139,5 +139,23 @@ def combos(name: str) -> list[dict]:
     return [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
 
 
-def prepare(name: str, df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
-    return STRATEGIES[name](df, **(params or {}))
+def confirmed(df: pd.DataFrame, btc_close: pd.Series) -> pd.Series:
+    """Entry confirmation, adopted in results/edge_study.md: at least 3 of these 4 hold at the previous bar's close.
+    The coin is above its 200-bar EMA; BTC is above its 200-bar EMA; the last day's volume is at least the 30-day
+    daily average; the coin is no more than 3 ATR above its 50-bar EMA (not chasing)."""
+    c, btc = df["close"], btc_close.reindex(df.index).ffill()
+    d = int(pd.Timedelta(days=1) / (df.index[1] - df.index[0]))  # bars per day
+    votes = pd.DataFrame({"trend": c > ema(c, 200), "btc": btc > ema(btc, 200),
+                          "volume": df["volume"].rolling(d).sum() >= df["volume"].rolling(30 * d).sum() / 30,
+                          "not_chasing": c <= ema(c, 50) + 3 * atr(df)}).shift(1)
+    return votes.fillna(False).astype(int).sum(axis=1) >= 3
+
+
+def prepare(name: str, df: pd.DataFrame, params: dict | None = None, btc: pd.Series | None = None) -> pd.DataFrame:
+    """Strategy columns for `df`. With `btc` (BTC closes), entries also need the 3-of-4 confirmation."""
+    out = STRATEGIES[name](df, **(params or {}))
+    if btc is not None and name != "hold":
+        bad = ~confirmed(df, btc).to_numpy()
+        out["enter"] &= ~bad
+        out.loc[bad, "entry_stop"] = np.nan
+    return out
