@@ -39,6 +39,22 @@ A variant that passes is then checked once on the lockbox (2026-04-01 onward). I
 - Kronos was pre-trained on market data that may include 2022–2025 crypto candles. Its development result is only a screen; the lockbox (after its release) is the real test.
 - Four ideas and six variants mean some will look good by chance. That is why rule 2 and the lockbox exist.
 
+## Addendum (written and committed before V1 was run)
+
+After this study was registered, the bot adopted the 3-of-4 entry confirmation and the goal changed to maximum net profit
+(results/edge_study.md). So V1 runs twice:
+- **V1 as registered:** against the registered baseline (5 coins, no confirmation), with the rule above.
+- **V1 with today's rules:** confirmation on, against today's baseline (5 coins with confirmation). It is judged by the
+  current goal's rule from results/edge_study.md:
+  - net CAGR higher on the development period;
+  - both halves' CAGR at least the baseline's;
+  - MDD no worse than -30%;
+  - then the lockbox return no more than 2 points below the baseline's.
+
+The rotating cast is large: 186 coins have been in the daily top 10 by 30-day turnover at some point, and 244 in the top 20.
+Survivorship bias is stronger here than anywhere else in this repo. Coins Upbit delisted (several hundred since 2021,
+e.g. LUNA) cannot be downloaded, so V1 never holds the coins that went to zero.
+
 ## Results
 
 (filled in after the run)
