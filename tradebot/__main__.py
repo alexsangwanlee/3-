@@ -106,8 +106,9 @@ def cmd_optimize(cfg, args):
     summary = {"generated_at": pd.Timestamp.now(tz="UTC").isoformat(), "strategies": rule_strategies,
                "sleeves": sleeves, "portfolio_oos_metrics": {k: float(v) for k, v in m.items()},
                "costs_used": {"fee": cfg.costs.fee, "slippage": cfg.costs.slippage}, "self_review": rev}
-    Path(config.SELECTED).parent.mkdir(exist_ok=True)
-    Path(config.SELECTED).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    from .live import write_json
+
+    write_json(config.SELECTED, summary)  # atomic: the bot and the AI thread read it while this runs
     Path(config.SELECTED).with_name("walkforward.md").write_text(
         f"# Walk-forward out-of-sample results\n\nGenerated {summary['generated_at']}, markets {cfg.markets}, "
         f"timeframe {cfg.timeframe}m, fee {cfg.costs.fee:.2%} + slippage {cfg.costs.slippage:.2%} per side, "
@@ -173,8 +174,10 @@ def diagnose(cfg, client, env, telegram: bool = False) -> tuple[list[str], list[
         if not [x for x in cfg.strategies if x != "ai"]:
             problems.append("ai 전략은 규칙 전략(donchian, ema_cross 등) 하나 이상과 함께 고르세요. AI는 규칙 전략의 신호가 날 때 판단합니다.")
         if live and paper_days() < PAPER_DAYS:
-            problems.append(f"ai 전략의 실거래는 모의매매에서 AI가 실제로 판단한 날이 {PAPER_DAYS}일 이상 있어야 합니다 "
-                            f"(지금 {paper_days()}일). 모의매매로 먼저 돌리거나 전략에서 ai 를 빼세요.")
+            msg = (f"ai 전략의 실거래는 모의매매에서 AI가 실제로 판단한 날이 {PAPER_DAYS}일 이상 있어야 합니다 "
+                   f"(지금 {paper_days()}일). 모의매매로 먼저 돌리거나 전략에서 ai 를 빼세요.")
+            restarted = _ledger_cash(cfg.budget_krw)[1]  # never refuse a restart: open positions need their stops
+            (ok if restarted else problems).append("주의: ai 는 쉬고 나머지 전략만 돌립니다. " + msg if restarted else msg)
     if live and cfg.budget_krw <= 0:
         problems.append("config.toml 의 budget_krw 를 정하세요 (봇이 쓸 원화, 예: 1000000). 계좌의 나머지 돈은 건드리지 않습니다.")
     try:
@@ -399,7 +402,7 @@ def _bots(cfg, live, client, broker, budget):
                         PAPER_DAYS, paper_days())
         sleeves = [s for s in sleeves if s[0] != "ai"]
     held = {name: st for name, st in ledgers(cfg.mode).items() if (name in STRATEGIES or name == "ai")
-            and name not in {n for n, _, _ in sleeves} and st["positions"]}
+            and name not in {n for n, _, _ in sleeves} and (st["positions"] or st.get("pending"))}
     tied = sum(p["qty"] * p["entry"] for st in held.values() for p in st["positions"].values())
     bots = [bot(n, p, t, max(budget - tied, 0) / len(cfg.strategies)) for n, p, t in sleeves]
     for name, st in held.items():
@@ -432,7 +435,9 @@ def _run_loop(cfg, args, live, client):
             announced = stamp
             notify("[tradebot] 주간 리포트\n" + "\n".join(report(cfg.mode, f"logs/{cfg.mode}_equity.csv")))
             notify(f"[tradebot] {cfg.mode} 시작, 예산 {budget:,.0f}원을 {len(cfg.strategies)}개 전략에 나눔: "
-                   + ", ".join(f"{n}{'' if t else '(신규 진입 중단)'}" for n, _, t in sleeves))
+                   + ", ".join(f"{n}{'' if t else '(신규 진입 중단)'}" for n, _, t in sleeves)
+                   + ("\nai 는 모의매매에서 AI 판단이 28일 쌓일 때까지 쉽니다 (그 몫은 쓰지 않음)"
+                      if "ai" in cfg.strategies and "ai" not in {n for n, _, _ in sleeves} else ""))
         if job:  # trade with the previous selection until the new one is ready, then rebuild
             run_bots(bots, float("inf"), cfg.poll_seconds, done=lambda: not job.is_alive())
         else:

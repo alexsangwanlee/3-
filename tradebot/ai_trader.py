@@ -164,8 +164,8 @@ def rows(bot, bar, prices: dict) -> dict:
     positions = {m: p for m, p in bot.state["positions"].items() if not p.get("dust")}
     out, facts = {}, {}
     for m in bot.cfg.markets:
-        if m not in bot.candles:  # candles failed to load: nothing to judge it on
-            continue
+        if m not in bot.candles or bot.candles[m].index[-1] < bar - pd.Timedelta(minutes=bot.cfg.timeframe):
+            continue  # candles failed to load or stopped updating: nothing current to judge it on
         hist = regularize(bot.candles[m][bot.candles[m].index < bar], bot.cfg.timeframe)
         daily = hist["close"].resample("D").last().pct_change(fill_method=None)
         out[m] = {"enter": False, "exit": False, "entry_stop": np.nan, "size": 1.0, "rule": "",
@@ -229,7 +229,8 @@ def debate(ais: list[str], turn: int, bar: str, facts: dict) -> tuple[dict, set]
     else:  # one AI: the bot's validated 3-of-4 confirmation is the second opinion on buys
         buys = {m: rule for m, rule in buys.items() if facts[m]["confirmation_3_of_4"]}
     entry.update(bought=sorted(buys), sold=sorted(sells))
-    _write(JOURNAL, (_read(JOURNAL, []) + [entry])[-KEEP:])
+    with LOCK:
+        _write(JOURNAL, (_read(JOURNAL, []) + [entry])[-KEEP:])
     log.info("AI 판단 %s (%s 제안, %s 검토): 매수 %s, 매도 %s", bar, proposer, entry["reviewer"], sorted(buys), sorted(sells))
     return buys, sells
 

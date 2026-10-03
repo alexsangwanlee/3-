@@ -172,6 +172,11 @@ def save(payload: dict) -> tuple[int, dict]:
     if running and clean.get("mode", running) != running:
         return 409, {"errors": ["봇이 돌고 있는 동안에는 모드를 바꿀 수 없습니다. 먼저 정지하세요."]}
     cfg = Path("config.toml")
+    saved = tomllib.loads(cfg.read_text(encoding="utf-8")) if cfg.exists() else {}
+    if (clean.get("mode", saved.get("mode")) == "live" and "ai" in clean.get("strategies", saved.get("strategies", []))
+            and ai_trader.paper_days() < ai_trader.PAPER_DAYS):
+        return 400, {"errors": [f"ai 전략은 모의매매에서 AI가 판단한 날이 {ai_trader.PAPER_DAYS}일 쌓인 뒤에 실거래로 쓸 수 "
+                                f"있습니다 (지금 {ai_trader.paper_days()}일). 모의매매로 두거나 전략에서 ai 를 빼세요."]}
     if not cfg.exists():
         if Path("config.example.toml").exists():
             shutil.copy("config.example.toml", cfg)

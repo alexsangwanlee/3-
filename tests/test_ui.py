@@ -115,3 +115,11 @@ def test_profit_shows_what_fees_and_slippage_cost():
     assert out["fees"] == pytest.approx(250 + 260)  # the old row's fee is estimated from qty * price
     assert out["slippage"] == pytest.approx(100 + 520)
     assert out["series"] == [["2026-10-01", 0, 350], ["2026-10-02", 10_000, 350], ["2026-10-03", 30_000, 1130]]
+
+
+def test_live_mode_with_the_ai_sleeve_waits_for_28_paper_days(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    code, body = ui.save({"mode": "live", "strategies": ["donchian", "ai"]})
+    assert code == 400 and "28" in body["errors"][0]
+    assert ui.save({"mode": "paper", "strategies": ["donchian", "ai"]})[0] == 200
+    assert ui.save({"mode": "live"})[0] == 400  # ai is already in the saved strategies

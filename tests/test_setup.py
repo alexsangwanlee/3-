@@ -164,3 +164,15 @@ def test_resume_clears_the_kill_switch_only(tmp_path, monkeypatch, capsys):
     cmd_resume(config.Config(mode="live"), None)
     st = json.loads((tmp_path / "state" / "live_donchian.json").read_text())
     assert st["guard"]["halted"] is False and st["cash"] == 650_000
+
+
+def test_an_unconfirmed_order_of_a_removed_strategy_is_still_resolved(tmp_path, monkeypatch):
+    from tradebot.__main__ import _bots
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "state").mkdir()
+    pending = {"tradebot-x": {"side": "buy", "market": "KRW-BTC", "price": 100.0, "stop_dist": 5.0, "reason": "enter"}}
+    (tmp_path / "state" / "live_ema_cross.json").write_text(json.dumps(
+        {"cash": 500_000, "funded": 500_000, "positions": {}, "pending": pending, "last_entry_day": {},
+         "last_enter_bar": {}, "guard": None, "paper_holdings": {}}))
+    _, bots = _bots(config.Config(mode="live", strategies=["donchian"]), True, FakeClient(), None, 1_000_000)
+    assert ("ema_cross", False) in [(b.cfg.strategy, b.cfg.allow_entries) for b in bots]

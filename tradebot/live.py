@@ -342,7 +342,7 @@ class Bot:
             self._ai = job = {"bar": bar, "rows": {}, "ok": True}
         new = job is None or job["bar"] != bar
         retry = not new and job["ok"] is False and job["tries"] < 2 and now - job["at"] >= pd.Timedelta(minutes=5)
-        if (new or retry) and self.last_refresh >= bar.timestamp():  # candles include the bar that just closed
+        if (new or retry) and self.last_refresh >= bar.timestamp() and self._fresh("KRW-BTC", bar):
             from types import SimpleNamespace
 
             from .ai_trader import rows
@@ -364,6 +364,11 @@ class Bot:
             job["thread"].start()
             self._ai = job
         return {m: r for m, r in job["rows"].items() if m in prices} if job and job["bar"] == bar else {}
+
+    def _fresh(self, market: str, bar) -> bool:
+        """Its candles reach the bar that just closed (a failed refresh leaves old ones in place)."""
+        df = self.candles.get(market)
+        return df is not None and len(df) > 0 and df.index[-1] >= bar - pd.Timedelta(minutes=self.cfg.timeframe)
 
     # -- trading ---------------------------------------------------------
     def _order(self, side: str, market: str, amount: float, price: float, **meta) -> None:

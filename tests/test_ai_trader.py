@@ -56,8 +56,9 @@ def midnight(ex, days=1):
 def decide(bot, t):
     """Step, let the AIs' background decision finish, step again in the same bar (as the next poll would)."""
     bot.step(t)
-    if bot._ai.get("thread"):
-        bot._ai["thread"].join(5)
+    thread = (getattr(bot, "_ai", None) or {}).get("thread")
+    if thread:
+        thread.join(5)
     bot.step(t + pd.Timedelta(seconds=10))
 
 
@@ -329,3 +330,25 @@ def test_a_decision_is_never_reused_in_the_next_bar(tmp_path, ai):
     bot.state["cash"] += sold["qty"] * sold["entry"]
     bot.step(nxt + pd.Timedelta(seconds=5))  # new bar, candles not refreshed yet
     assert ex.placed == [("buy", "KRW-BTC")]
+
+
+def test_a_restart_with_live_coins_is_never_refused_for_the_ai_gate(tmp_path, monkeypatch):
+    """The rule sleeves' open positions need their stops; the run loop holds the ai back by itself."""
+    from test_setup import LIVE_KEYS, FakeClient
+
+    from tradebot.__main__ import diagnose
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "live_donchian.json").write_text(json.dumps(
+        {"cash": 0.0, "funded": 500_000, "positions": {"KRW-BTC": {"qty": 1.0, "entry": 100.0, "stop": 90.0}}}))
+    env = {**LIVE_KEYS, "ANTHROPIC_API_KEY": "sk-ant-fake-0123456789abcdefghij"}
+    cfg = config.Config(mode="live", budget_krw=1_000_000, strategies=["donchian", "ai"])
+    ok, problems = diagnose(cfg, FakeClient(), env)
+    assert not any("28" in p for p in problems) and any("28" in line for line in ok)
+
+
+def test_stale_candles_mean_the_ais_wait(tmp_path, ai):
+    ex = Exchange()
+    ai["script"] = {"propose_trades": propose(("KRW-BTC", "buy", "R1")), "review_trades": review(agree=["KRW-BTC"])}
+    decide(ai_bot(tmp_path, ex), now(ex) + pd.Timedelta(hours=12))  # Upbit's candles stopped 3 bars ago
+    assert ai["calls"] == [] and ex.placed == []
