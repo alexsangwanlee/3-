@@ -155,6 +155,8 @@ def diagnose(cfg, client, env, telegram: bool = False) -> tuple[list[str], list[
 
     ok, problems = [], []
     live = cfg.mode == "live"
+    if cfg.timeframe not in (60, 240):
+        problems.append(f"config.toml 의 timeframe 은 240(4시간, 검증된 값) 또는 60만 됩니다 (지금 {cfg.timeframe}).")
     if cfg.mode not in ("paper", "live"):
         problems.append(f'config.toml 의 mode 는 "paper"(모의매매) 또는 "live"(실거래)만 됩니다 (지금 "{cfg.mode}").')
     ok.append("모드: 실거래" if live else "모드: 모의매매 (실제 주문 없음)")
@@ -226,22 +228,34 @@ def diagnose(cfg, client, env, telegram: bool = False) -> tuple[list[str], list[
 
 
 def order_roundtrip(client, market: str = BTC, krw: int = 6_000) -> list[str]:
-    """Real-money end-to-end check: buy `krw` of `market` and sell it straight back through the bot's own order
-    path (identifier saved before sending, fills read from the exchange, lookup by identifier as after a crash).
-    6,000 KRW so the sell side stays above Upbit's 5,000 KRW minimum even after a dip."""
+    """Real-money end-to-end check: buy `krw` of `market` and sell it straight back through the bot's own broker
+    (orders sent with an identifier, fills read from the exchange, then looked up by identifier as after a crash).
+    6,000 KRW so the sell side stays above Upbit's 5,000 KRW minimum unless the price falls 16% in between."""
     from .live import UpbitBroker
 
     broker = UpbitBroker(client)
     if broker.available_krw() < krw * 1.01:
         raise SystemExit(f"KRW 잔고가 {krw:,}원보다 적어 시험 주문을 하지 않았습니다.")
     price = client.tickers([market])[market]
-    vol, fill = broker.buy(market, krw, price, f"tradebot-test-{uuid.uuid4().hex}")
+    def sent(side, amount, at):  # a lost reply is not a failed order: ask Upbit what really happened
+        ident = f"tradebot-test-{uuid.uuid4().hex}"
+        try:
+            return (broker.buy if side == "buy" else broker.sell)(market, amount, at, ident), ident
+        except Exception as e:
+            try:
+                got = broker.resolve(ident)
+            except Exception:
+                got = "unknown"
+            if got and got != "unknown" and got[0] > 0:
+                return got, ident
+            what = "매수" if side == "buy" else "매도"
+            raise SystemExit(f"{what} 주문의 결과를 확인하지 못했습니다 ({_advice(e)}). 업비트 앱의 거래내역에서 "
+                             f"주문번호 {ident} 를 확인하세요." + (" 매수한 코인이 남아 있으면 앱에서 직접 파세요."
+                                                            if side == "sell" else ""))
+
+    (vol, fill), _ = sent("buy", krw, price)
     lines = [f"매수 체결: {vol:.8f} {market.split('-')[1]} @ {fill:,.0f}원 (주문 직전 시세 {price:,.0f}원)"]
-    ident = f"tradebot-test-{uuid.uuid4().hex}"
-    try:
-        sold, sell_fill = broker.sell(market, vol, fill, ident)
-    except Exception as e:
-        raise SystemExit(f"매도에 실패했습니다 ({_advice(e)}). 업비트 앱에서 {market} {vol:.8f}개를 직접 파세요.")
+    (sold, sell_fill), ident = sent("sell", vol, fill)
     again = broker.resolve(ident)
     lines.append(f"매도 체결: {sold:.8f} @ {sell_fill:,.0f}원")
     lines.append("주문번호로 다시 조회: " + ("일치 (봇이 꺼졌다 켜져도 주문을 놓치지 않습니다)" if again and
@@ -297,7 +311,7 @@ def cmd_review(cfg, args):
 
 def cmd_resume(cfg, args):
     """Clear the -35% kill switch, after you have looked into why it fired."""
-    from .live import ledgers, running_pid
+    from .live import ledgers, running_pid, write_json
 
     if running_pid():
         raise SystemExit("봇을 먼저 정지하세요 (제어판의 정지 버튼).")
@@ -305,7 +319,7 @@ def cmd_resume(cfg, args):
     for name, st in ledgers(cfg.mode).items():
         if (st.get("guard") or {}).get("halted"):
             st["guard"].update(halted=False, peak=0.0)  # the next step takes today's ledger as the new peak
-            Path(f"state/{cfg.mode}_{name}.json").write_text(json.dumps(st, indent=2), encoding="utf-8")
+            write_json(f"state/{cfg.mode}_{name}.json", st)
             print(f"{name}: 비상 정지를 풀었습니다. 다시 시작하면 지금 장부를 새 고점으로 삼아 매매합니다.")
             cleared += 1
     print("풀 것이 없습니다." if not cleared else "제어판에서 다시 시작하세요.")

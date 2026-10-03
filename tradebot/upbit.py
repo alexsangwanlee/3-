@@ -3,15 +3,16 @@ import base64
 import hashlib
 import hmac
 import json
-import math
 import time
 import uuid
+from decimal import ROUND_DOWN, Decimal
 from urllib.parse import unquote, urlencode
 
 import requests
 
 API = "https://api.upbit.com/v1"
-BLOCK_SECONDS = 60  # after a 418 (temporary IP block), stay quiet this long: asking again extends the block
+BLOCK_SECONDS = 60  # after a 418 (temporary IP block) with no Retry-After: stay quiet this long
+_blocked_until = 0.0  # per process, like Upbit's block (per IP): every client here waits, not just the one blocked
 
 
 def _b64url(raw: bytes) -> str:
@@ -32,7 +33,6 @@ class UpbitClient:
         self.secret_key = secret_key
         self.timeout = timeout
         self.session = requests.Session()
-        self.blocked_until = 0.0
 
     # -- transport -------------------------------------------------------
     def _headers(self, params: dict | None) -> dict:
@@ -46,7 +46,8 @@ class UpbitClient:
         return {"Authorization": f"Bearer {make_jwt(payload, self.secret_key)}"}
 
     def _request(self, method: str, path: str, params: dict | None = None, auth: bool = False):
-        if time.time() < self.blocked_until:
+        global _blocked_until
+        if time.time() < _blocked_until:
             raise RuntimeError("Upbit 418: 요청이 너무 많아 잠시 차단됨, 기다리는 중")
         for attempt in range(5):
             headers = self._headers(params) if auth else {}
@@ -58,8 +59,12 @@ class UpbitClient:
                 time.sleep(0.5 * (attempt + 1))
                 continue
             if r.status_code == 418:  # temporarily blocked for repeated 429s
-                self.blocked_until = time.time() + BLOCK_SECONDS
-                raise RuntimeError(f"Upbit 418: 요청이 너무 많아 {BLOCK_SECONDS}초 차단됨: {r.text[:200]}")
+                try:
+                    wait = float(r.headers.get("Retry-After", BLOCK_SECONDS))
+                except ValueError:
+                    wait = BLOCK_SECONDS
+                _blocked_until = time.time() + wait
+                raise RuntimeError(f"Upbit 418: 요청이 너무 많아 {wait:.0f}초 차단됨: {r.text[:200]}")
             if r.status_code >= 400:
                 raise RuntimeError(f"Upbit {method} {path} -> {r.status_code}: {r.text[:300]}")
             return r.json()
@@ -92,7 +97,7 @@ class UpbitClient:
 
     def sell_market(self, market: str, volume: float, identifier: str | None = None) -> dict:
         return self._request("POST", "/orders", {"market": market, "side": "ask", "ord_type": "market",
-                                                 "volume": f"{math.floor(volume * 1e8) / 1e8:.8f}",
+                                                 "volume": str(Decimal(repr(volume)).quantize(Decimal("1e-8"), ROUND_DOWN)),
                                                  **({"identifier": identifier} if identifier else {})}, auth=True)
 
     def order(self, uuid: str | None = None, identifier: str | None = None) -> dict:

@@ -62,6 +62,7 @@ def test_a_418_block_pauses_all_requests_instead_of_hammering(monkeypatch):
 
     c = UpbitClient()
     monkeypatch.setattr(c.session, "get", lambda *a, **k: calls.append(1) or Blocked())
+    monkeypatch.setattr(upbit, "_blocked_until", 0.0)
     now = [1000.0]
     monkeypatch.setattr(upbit.time, "time", lambda: now[0])
     for _ in range(3):
@@ -72,3 +73,24 @@ def test_a_418_block_pauses_all_requests_instead_of_hammering(monkeypatch):
     with pytest.raises(RuntimeError):
         c.tickers(["KRW-BTC"])
     assert len(calls) == 2  # tried again once the block should be over
+
+
+def test_a_418_blocks_every_client_in_the_process_for_as_long_as_upbit_says(monkeypatch):
+    from tradebot import upbit
+    calls = []
+
+    class Blocked:
+        status_code, text, headers = 418, "blocked", {"Retry-After": "180"}
+
+    now = [5000.0]
+    monkeypatch.setattr(upbit.time, "time", lambda: now[0])
+    monkeypatch.setattr(upbit, "_blocked_until", 0.0)
+    a, b = UpbitClient(), UpbitClient()
+    for c in (a, b):
+        monkeypatch.setattr(c.session, "get", lambda *x, **k: calls.append(1) or Blocked())
+    with pytest.raises(RuntimeError):
+        a.tickers(["KRW-BTC"])
+    now[0] += 120  # past the old fixed 60 s, still inside Upbit's 180 s
+    with pytest.raises(RuntimeError):
+        b.tickers(["KRW-BTC"])  # another client (the weekly data refresh, a second sleeve) also waits
+    assert len(calls) == 1

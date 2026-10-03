@@ -31,6 +31,15 @@ def stop_requested() -> bool:
     return STOP.is_set() or STOP_FILE.exists()
 
 
+def write_json(path, obj) -> None:
+    """Atomic: a crash mid-write must never leave a half ledger or rulebook."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    os.replace(tmp, p)
+
+
 def ledgers(mode: str) -> dict[str, dict]:
     """Every strategy ledger saved for `mode` (state/<mode>_<strategy>.json), including removed strategies."""
     return {p.stem.removeprefix(f"{mode}_"): json.loads(p.read_text(encoding="utf-8"))
@@ -231,11 +240,7 @@ class Bot:
 
     def save(self) -> None:
         self.state["guard"] = self.guard.to_dict()
-        p = Path(self.cfg.state_path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")  # a crash mid-write must never leave a half ledger
-        tmp.write_text(json.dumps(self.state, indent=2, default=str), encoding="utf-8")
-        os.replace(tmp, p)
+        write_json(self.cfg.state_path, self.state)
 
     @staticmethod
     def _append(path: str, **row) -> None:
@@ -274,6 +279,7 @@ class Bot:
         if m in self.candles:  # only the newest page is needed after the first load
             df = pd.concat([self.candles[m], to_frame(self.client.candles(m, self.cfg.timeframe, count=200))])
             self.candles[m] = df[~df.index.duplicated(keep="last")].iloc[-self.cfg.history_bars:]
+            time.sleep(0.12)  # candles: 10 requests/s per IP, and every sleeve refreshes in the same poll
             return
         rows, to = [], None
         while len(rows) < self.cfg.history_bars:
@@ -307,9 +313,12 @@ class Bot:
         if df.index[-1] < bar:  # no trade yet in the current bar
             df = pd.concat([df, pd.DataFrame({"open": price, "high": price, "low": price, "close": price,
                                               "volume": 0.0}, index=[bar])])
-        btc = self.candles["KRW-BTC"]["close"]  # missing -> this market gets no signal this step (never unconfirmed)
-        prepared = prepare(self.cfg.strategy, regularize(df, self.cfg.timeframe), self.cfg.params, btc=btc)
-        return prepared.iloc[-1]
+        btc = self.candles.get("KRW-BTC")
+        row = prepare(self.cfg.strategy, regularize(df, self.cfg.timeframe), self.cfg.params,
+                      btc=None if btc is None else btc["close"]).iloc[-1].copy()
+        if btc is None:  # BTC candles failed to load: exits still work, nothing is bought without the confirmation
+            row["enter"], row["entry_stop"] = False, float("nan")
+        return row
 
     def _ai_rows(self, bar, prices: dict) -> dict:
         """The ai sleeve's rows. The AIs decide once per bar in a background thread, on a snapshot, so a slow or

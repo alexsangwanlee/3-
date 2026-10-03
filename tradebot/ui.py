@@ -27,7 +27,7 @@ from .strategies import STRATEGIES
 PAGE = Path(__file__).with_name("ui.html")
 SECRET_KEYS = {"UPBIT_ACCESS_KEY": r"[A-Za-z0-9]{20,80}", "UPBIT_SECRET_KEY": r"[A-Za-z0-9]{20,80}",
                "TELEGRAM_BOT_TOKEN": r"\d+:[A-Za-z0-9_-]{20,}", "TELEGRAM_CHAT_ID": r"-?\d+",
-               "ANTHROPIC_API_KEY": r"sk-ant-[A-Za-z0-9_-]{20,}", "OPENAI_API_KEY": r"sk-[A-Za-z0-9_-]{20,}"}
+               "ANTHROPIC_API_KEY": r"sk-ant-[A-Za-z0-9_-]{20,}", "OPENAI_API_KEY": r"sk-(?!ant-)[A-Za-z0-9_-]{20,}"}
 LABELS = {"UPBIT_ACCESS_KEY": "Access 키", "UPBIT_SECRET_KEY": "Secret 키",
           "TELEGRAM_BOT_TOKEN": "텔레그램 봇 토큰", "TELEGRAM_CHAT_ID": "텔레그램 chat id", "ANTHROPIC_API_KEY": "Claude API 키",
           "OPENAI_API_KEY": "GPT(OpenAI) API 키"}
@@ -228,7 +228,7 @@ def status() -> dict:
     held = sorted({m for s in sleeves for m in s["positions"]})
     try:
         from .upbit import UpbitClient
-        prices = UpbitClient().tickers(held) if held else {}
+        prices = UpbitClient().tickers(held) if held and not running else {}
     except Exception:
         prices = {}
     equity = funded = 0.0

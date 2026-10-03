@@ -276,3 +276,41 @@ def test_the_real_money_check_refuses_without_enough_krw():
     with pytest.raises(SystemExit):
         order_roundtrip(ex, krw=6_000)
     assert ex.placed == []
+
+
+def test_without_btc_candles_exits_still_work_and_nothing_is_bought_unconfirmed(tmp_path, monkeypatch):
+    ex = Exchange()
+    bot = make_bot(tmp_path, ex, markets=["KRW-ETH"])
+    bot.cfg.strategy = "ema_cross"
+    real = ex.candles
+    monkeypatch.setattr(ex, "candles", lambda m, *a, **k: (_ for _ in ()).throw(RuntimeError("503")) if m == "KRW-BTC"
+                        else real(m, *a, **k))
+    hold(bot, ex, "KRW-ETH", 1000.0, stop=ex.price * 0.5)
+    monkeypatch.setattr(live, "prepare", lambda *a, **k: pd.DataFrame(
+        {"enter": [True], "exit": [True], "entry_stop": [ex.price], "stop_dist": [1.0], "size": [1.0], "vol": [0.01]}))
+    bot.step(now(ex))
+    assert "KRW-ETH" not in bot.state["positions"]  # the exit signal still sold
+    assert ("buy", "KRW-ETH") not in ex.placed
+
+
+def test_sell_volume_keeps_every_satoshi():
+    from tradebot.upbit import UpbitClient
+    sent = {}
+    c = UpbitClient("a" * 40, "s" * 40)
+    c._request = lambda method, path, params=None, auth=False: sent.update(params) or {"uuid": "x"}
+    c.sell_market("KRW-BTC", 0.00100002)
+    assert sent["volume"] == "0.00100002"
+
+
+def test_the_real_money_check_does_not_say_sell_by_hand_when_the_sell_went_through(monkeypatch):
+    from tradebot.__main__ import order_roundtrip
+    ex = Exchange(krw=50_000)
+    real_sell = ex.sell_market
+
+    def sold_but_reply_lost(market, volume, identifier=None):
+        real_sell(market, volume, identifier)
+        raise requests.ReadTimeout("reply lost")
+
+    monkeypatch.setattr(ex, "sell_market", sold_but_reply_lost)
+    lines = order_roundtrip(ex, krw=6_000)  # no SystemExit telling the user to sell coins they no longer have
+    assert ex.coins["KRW-BTC"] == pytest.approx(0, abs=1e-8) and any("매도 체결" in line for line in lines)

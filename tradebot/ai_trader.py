@@ -13,7 +13,6 @@ reached, the sleeve makes no new buys and its stops keep working. Real money onl
 """
 import json
 import logging
-import os
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +20,7 @@ import pandas as pd
 
 from . import claude, config
 from .data import regularize
+from .live import write_json as _write
 from .strategies import atr, confirmed, ema, prepare
 
 log = logging.getLogger("tradebot")
@@ -73,13 +73,6 @@ REVIEW = {"name": "review_trades", "description": "Review of the other AI's prop
 
 def _read(path: Path, default):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
-
-
-def _write(path: Path, obj) -> None:
-    path.parent.mkdir(exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def rulebook() -> list[dict]:
