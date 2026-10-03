@@ -25,7 +25,7 @@ def test_toml_update_keeps_comments_and_tables():
 
 @pytest.mark.parametrize("bad", [
     {"mode": "yolo"}, {"budget_krw": -1}, {"budget_krw": "3000"}, {"paper_krw": "0"},
-    {"markets": ["BTC"]}, {"strategies": ["hold"]},
+    {"markets": ["BTC"]}, {"strategies": ["hold"]}, {"strategies": ["ai"]},
     {"UPBIT_ACCESS_KEY": "short"}, {"TELEGRAM_CHAT_ID": "abc"},
 ])
 def test_settings_are_validated(bad):

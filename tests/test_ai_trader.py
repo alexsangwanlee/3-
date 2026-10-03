@@ -345,6 +345,9 @@ def test_a_restart_with_live_coins_is_never_refused_for_the_ai_gate(tmp_path, mo
     cfg = config.Config(mode="live", budget_krw=1_000_000, strategies=["donchian", "ai"])
     ok, problems = diagnose(cfg, FakeClient(), env)
     assert not any("28" in p for p in problems) and any("28" in line for line in ok)
+    cfg.strategies = ["ai"]  # nor for the ai's other conditions (a rule strategy alongside it, a key)
+    ok, problems = diagnose(cfg, FakeClient(), {k: v for k, v in env.items() if k != "ANTHROPIC_API_KEY"})
+    assert not any("ai" in p for p in problems)
 
 
 def test_stale_candles_mean_the_ais_wait(tmp_path, ai):

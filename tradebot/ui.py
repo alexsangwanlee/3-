@@ -79,8 +79,10 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
             else:
                 errors.append("Claude 자동 실행은 켜기/끄기만 고를 수 있습니다.")
         elif key == "strategies":
-            if value and all((s in STRATEGIES and s != "hold") or s == "ai" for s in value):
+            if value and all((s in STRATEGIES and s != "hold") or s == "ai" for s in value) and value != ["ai"]:
                 out[key] = list(value)
+            elif value == ["ai"]:
+                errors.append("ai 는 규칙 전략(donchian, ema_cross 등) 하나 이상과 함께 고르세요. AI는 규칙 전략의 신호가 날 때 판단합니다.")
             else:
                 errors.append("전략을 하나 이상 고르세요.")
         elif key in SECRET_KEYS:

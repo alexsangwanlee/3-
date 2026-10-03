@@ -169,15 +169,17 @@ def diagnose(cfg, client, env, telegram: bool = False) -> tuple[list[str], list[
     if "ai" in cfg.strategies:
         from .ai_trader import PAPER_DAYS, paper_days
 
+        issues = []
         if not (env.get("ANTHROPIC_API_KEY") or env.get("OPENAI_API_KEY")):
-            problems.append("ai 전략은 Claude 또는 GPT API 키가 필요합니다 (제어판의 AI 검토 칸).")
+            issues.append("ai 전략은 Claude 또는 GPT API 키가 필요합니다 (제어판의 AI 검토 칸).")
         if not [x for x in cfg.strategies if x != "ai"]:
-            problems.append("ai 전략은 규칙 전략(donchian, ema_cross 등) 하나 이상과 함께 고르세요. AI는 규칙 전략의 신호가 날 때 판단합니다.")
+            issues.append("ai 전략은 규칙 전략(donchian, ema_cross 등) 하나 이상과 함께 고르세요. AI는 규칙 전략의 신호가 날 때 판단합니다.")
         if live and paper_days() < PAPER_DAYS:
-            msg = (f"ai 전략의 실거래는 모의매매에서 AI가 실제로 판단한 날이 {PAPER_DAYS}일 이상 있어야 합니다 "
-                   f"(지금 {paper_days()}일). 모의매매로 먼저 돌리거나 전략에서 ai 를 빼세요.")
-            restarted = _ledger_cash(cfg.budget_krw)[1]  # never refuse a restart: open positions need their stops
-            (ok if restarted else problems).append("주의: ai 는 쉬고 나머지 전략만 돌립니다. " + msg if restarted else msg)
+            issues.append(f"ai 전략의 실거래는 모의매매에서 AI가 실제로 판단한 날이 {PAPER_DAYS}일 이상 있어야 합니다 "
+                          f"(지금 {paper_days()}일). 그때까지 ai 몫은 쓰지 않습니다. 모의매매로 먼저 돌리거나 전략에서 ai 를 빼세요.")
+        # never refuse a live restart over the ai: open positions need their stops, and the run loop holds the ai back
+        restarted = live and _ledger_cash(cfg.budget_krw)[1]
+        (ok if restarted else problems).extend(("주의: " + m) if restarted else m for m in issues)
     if live and cfg.budget_krw <= 0:
         problems.append("config.toml 의 budget_krw 를 정하세요 (봇이 쓸 원화, 예: 1000000). 계좌의 나머지 돈은 건드리지 않습니다.")
     try:
