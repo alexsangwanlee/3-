@@ -243,3 +243,18 @@ def test_paused_buys_still_let_stops_fire(tmp_path, monkeypatch):
     live.PAUSE_FILE.unlink()
     bot.step(now(ex, 2))
     assert ("buy", "KRW-BTC") in ex.placed
+
+
+def test_every_fill_records_its_fee_and_slippage_in_krw(tmp_path):
+    ex = Exchange(krw=1_000_000)
+    bot = make_bot(tmp_path, ex)
+    bot.step(now(ex))
+    ex.price *= 1.10
+    bot.cfg.allow_entries = False
+    bot.state["positions"]["KRW-BTC"]["stop"] = ex.price * 2  # force a sell
+    bot.step(now(ex, 1))
+    rows = pd.read_csv(tmp_path / "trades.csv")
+    assert list(rows["side"]) == ["buy", "sell"]
+    assert rows["fee"].to_numpy() == pytest.approx(rows["value"].to_numpy() * FEE, abs=0.01)
+    assert rows["value"].iloc[0] == pytest.approx(rows["qty"].iloc[0] * rows["price"].iloc[0])
+    assert "slip_cost" in rows

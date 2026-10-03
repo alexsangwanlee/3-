@@ -191,6 +191,29 @@ def _csv(path: str) -> pd.DataFrame:
     return pd.read_csv(p) if p.exists() else pd.DataFrame()
 
 
+def profit(log: pd.DataFrame, trades: pd.DataFrame, fee: float) -> dict:
+    """Net profit (ledger minus money put in) and what fees and slippage cost, cumulative per day."""
+    if log.empty:
+        return {"net": 0.0, "fees": 0.0, "slippage": 0.0, "series": []}
+    eq = log.pivot_table(index="date", columns="strategy", values="equity").ffill().sum(axis=1)
+    funded = log.pivot_table(index="date", columns="strategy", values="funded").ffill().sum(axis=1)
+    fees = slip = pd.Series(0.0, index=eq.index)
+    if not trades.empty:
+        t = trades.copy()
+        value = t["value"] if "value" in t else pd.Series(float("nan"), index=t.index)
+        value = value.fillna(t["qty"] * t["price"])  # rows logged before costs were recorded
+        t["fee"] = (t["fee"] if "fee" in t else pd.Series(float("nan"), index=t.index)).fillna(value * fee)
+        t["slip_cost"] = (t["slip_cost"] if "slip_cost" in t else pd.Series(float("nan"), index=t.index)).fillna(
+            value * pd.to_numeric(t.get("slip", 0.0), errors="coerce").fillna(0.0))
+        day = pd.to_datetime(t["time"], utc=True, format="ISO8601").dt.strftime("%Y-%m-%d")
+        cum = t.groupby(day)[["fee", "slip_cost"]].sum().cumsum()
+        cum = cum.reindex(cum.index.union(eq.index)).ffill().fillna(0.0).reindex(eq.index)
+        fees, slip = cum["fee"], cum["slip_cost"]
+    net = eq - funded
+    return {"net": float(net.iloc[-1]), "fees": float(fees.iloc[-1]), "slippage": float(slip.iloc[-1]),
+            "series": [[d, round(n), round(f + s_)] for d, n, f, s_ in zip(eq.index, net, fees, slip)]}
+
+
 def status() -> dict:
     cfg = config.load()
     e = env()
@@ -221,7 +244,8 @@ def status() -> dict:
     log = _csv(f"logs/{mode}_equity.csv")
     curve = (log.pivot_table(index="date", columns="strategy", values="equity").ffill().sum(axis=1)
              if not log.empty else pd.Series(dtype=float))
-    trades = _csv(f"logs/{mode}_trades.csv").tail(15).iloc[::-1].fillna("").to_dict("records")
+    all_trades = _csv(f"logs/{mode}_trades.csv")
+    trades = all_trades.tail(15).iloc[::-1].fillna("").to_dict("records")
     tail = Path("logs/bot.log").read_text(encoding="utf-8", errors="replace").splitlines()[-60:] if Path("logs/bot.log").exists() else []
     sel = config.selection()
     return {
@@ -237,6 +261,7 @@ def status() -> dict:
         "telegram_set": bool(e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID")),
         "equity": equity, "funded": funded, "positions": positions, "trades": trades, "log": tail,
         "curve": [[d, round(v)] for d, v in curve.items()],
+        "profit": profit(log, all_trades, cfg.costs.fee),
         "report": report(mode, f"logs/{mode}_equity.csv"),
         "sleeves": {k: {"params": v["params"], "tradable": v["tradable"]} for k, v in sel.get("sleeves", {}).items()},
         "optimized_at": sel.get("generated_at"),

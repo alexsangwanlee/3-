@@ -101,3 +101,17 @@ def test_keys_file_is_private_from_the_first_byte(tmp_path, monkeypatch):
     assert text.startswith("# 업비트 키") and "A" * 40 in text  # setup comments kept
     if os.name != "nt":
         assert (tmp_path / ".env").stat().st_mode & 0o077 == 0
+
+
+def test_profit_shows_what_fees_and_slippage_cost():
+    import pandas as pd
+    log = pd.DataFrame({"date": ["2026-10-01", "2026-10-02", "2026-10-03"], "strategy": "donchian",
+                        "equity": [1_000_000, 1_010_000, 1_030_000], "funded": 1_000_000})
+    trades = pd.DataFrame({"time": ["2026-10-01T05:00:00+00:00", "2026-10-03T09:00:00+00:00"], "qty": [1.0, 1.0],
+                           "price": [500_000, 520_000], "value": [500_000, None], "fee": [250.0, None],
+                           "slip_cost": [100.0, None], "slip": [0.0002, 0.001]})
+    out = ui.profit(log, trades, fee=0.0005)
+    assert out["net"] == 30_000
+    assert out["fees"] == pytest.approx(250 + 260)  # the old row's fee is estimated from qty * price
+    assert out["slippage"] == pytest.approx(100 + 520)
+    assert out["series"] == [["2026-10-01", 0, 350], ["2026-10-02", 10_000, 350], ["2026-10-03", 30_000, 1130]]

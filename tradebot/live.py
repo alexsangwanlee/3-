@@ -350,7 +350,8 @@ class Bot:
             log.info("BUY  %s qty=%.8f @ %.4f (%s) stop=%s", m, vol, fill, order["reason"], stop)
             notify(f"[tradebot] 매수 {m} {vol * fill:,.0f}원 @ {fill:,.0f}" + (f", 손절가 {stop:,.0f}" if stop else ""))
             self._log_trade(time=t, strategy=self.cfg.strategy, market=m, side="buy", qty=vol, price=fill,
-                            reason=order["reason"], pnl="", slip=round(fill / order["price"] - 1, 6))
+                            reason=order["reason"], pnl="", slip=round(fill / order["price"] - 1, 6),
+                            **self._costs(vol, fill, fill - order["price"]))
             return
         self.state["cash"] += vol * fill * (1 - fee)
         pos = positions.get(m)
@@ -364,7 +365,13 @@ class Bot:
         notify(f"[tradebot] 매도 {m} @ {fill:,.0f} ({order['reason']}) 손익 {pnl:+.2%}")
         self._log_trade(time=t, strategy=self.cfg.strategy, market=m, side="sell", qty=vol, price=fill,
                         reason=order["reason"], pnl=round(pnl, 6),
-                        slip=round(1 - fill / order["price"], 6))  # vs the price the decision saw: learned by optimize
+                        slip=round(1 - fill / order["price"], 6),  # vs the price the decision saw: learned by optimize
+                        **self._costs(vol, fill, order["price"] - fill))
+
+    def _costs(self, vol: float, fill: float, worse_by: float) -> dict:
+        """What this fill cost in KRW: the exchange fee, and slippage against the price the decision saw."""
+        value = vol * fill
+        return {"value": round(value, 2), "fee": round(value * self.cfg.costs.fee, 2), "slip_cost": round(vol * worse_by, 2)}
 
     def _sell(self, market: str, price: float, reason: str) -> None:
         pos = self.state["positions"][market]

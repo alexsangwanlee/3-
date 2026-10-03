@@ -95,6 +95,15 @@ figure { margin: 12px 0 0; position: relative; }
   padding: 6px 10px; border-radius: 6px; font-size: 13px; white-space: nowrap; transform: translate(-50%, -120%);
 }
 details { margin-top: 10px; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 36px; margin: 4px 0 0; }
+.stat { color: var(--muted); font-size: 14px; }
+.stat b { display: block; color: var(--ink); font-size: 20px; letter-spacing: -0.01em; }
+.key { display: inline-block; width: 20px; vertical-align: middle; margin: 0 6px 0 0; border-top: 2px solid var(--accent); }
+.key.gross { border-top: 2px dashed var(--muted); }
+.key.cost { border-top: 8px solid color-mix(in srgb, var(--warn) 25%, transparent); }
+#pnl-chart { width: 100%; height: 220px; display: block; }
+#pnl-chart.blank { height: 40px; }
+#pnl-chart text { fill: var(--muted); font-size: 12px; }
 summary { cursor: pointer; color: var(--muted); }
 
 table { width: 100%; border-collapse: collapse; }
@@ -182,6 +191,16 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
       </figure>
     </div>
   </div>
+
+  <h2>수익과 비용</h2>
+  <div class="stats" id="pnl-stats"></div>
+  <figure>
+    <svg id="pnl-chart" role="img" aria-labelledby="pnl-cap"></svg>
+    <div class="tip" id="pnl-tip" hidden></div>
+    <figcaption id="pnl-cap" class="muted"><span class="key"></span>순수익 &nbsp; <span class="key gross"></span>비용 전 수익 &nbsp;
+      <span class="key cost"></span>그 차이 = 낸 수수료와 슬리피지</figcaption>
+    <details><summary>표로 보기</summary><div class="scroll" tabindex="0" role="region" aria-label="날짜별 수익과 비용 표"><table id="pnl-table"></table></div></details>
+  </figure>
 
   <h2>보유 중</h2>
   <div class="scroll" tabindex="0" role="region" aria-label="보유 중인 코인 표"><table id="positions"></table></div>
@@ -492,6 +511,63 @@ function drawChart(points) {
   svg.onpointerleave = () => { tip.hidden = true; for (const n of [cross, dot]) n.setAttribute("visibility", "hidden"); };
 }
 
+function renderProfit() {
+  const P = S.profit, costs = P.fees + P.slippage, gross = P.net + costs;
+  const stat = (label, value, cls) => { const d = el("div", undefined, "stat"); d.append(el("b", value, cls), el("span", label)); return d; };
+  $("#pnl-stats").replaceChildren(
+    stat("순수익 (수수료·슬리피지 뺀 뒤)", won(P.net), tone(P.net)),
+    stat("낸 수수료", won(P.fees)),
+    stat("슬리피지 (주문 순간보다 불리하게 체결된 금액)", won(P.slippage)),
+    stat("비용이 먹은 몫", gross > 0 ? `수익의 ${(costs / gross * 100).toFixed(0)}%` : "-"));
+  drawPnl(P.series);
+  table("#pnl-table", [["날짜"], ["순수익", true], ["누적 비용", true], ["비용 전 수익", true]],
+    P.series.slice().reverse().map(([d, n, c]) => [d, won(n), won(c), won(n + c)]), "아직 기록이 없습니다.");
+}
+
+function drawPnl(points) {
+  const svg = $("#pnl-chart"), tip = $("#pnl-tip"), ns = "http://www.w3.org/2000/svg";
+  const mk = (tag, attrs) => { const n = document.createElementNS(ns, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
+  svg.replaceChildren();
+  tip.hidden = true;
+  svg.classList.toggle("blank", points.length < 2);
+  const W = svg.clientWidth || 600, H = points.length < 2 ? 40 : 220, L = 8, R = 8, T = 16, B = 26;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (points.length < 2) {
+    const t = mk("text", { x: 0, y: 24 });
+    t.textContent = "이틀 이상 돌리면 순수익과 비용이 날짜별로 그려집니다.";
+    svg.append(t);
+    return;
+  }
+  const net = points.map((p) => p[1]), gross = points.map((p) => p[1] + p[2]);
+  const lo = Math.min(0, ...net), hi = Math.max(0, ...gross), span = hi - lo || 1;
+  const x = (i) => L + (i / (points.length - 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / span) * (H - T - B);
+  const css = getComputedStyle(document.documentElement), v = (name) => css.getPropertyValue(name);
+  const path = (vals) => vals.map((val, i) => `${i ? "L" : "M"}${x(i)},${y(val)}`).join("");
+  svg.append(mk("line", { x1: L, x2: W - R, y1: y(0), y2: y(0), stroke: v("--rule"), "stroke-width": 1 }));
+  svg.append(mk("path", { d: path(gross) + net.map((val, i) => `L${x(net.length - 1 - i)},${y(net[net.length - 1 - i])}`).join("") + "Z",
+    fill: v("--warn"), "fill-opacity": 0.18, stroke: "none" }));
+  svg.append(mk("path", { d: path(gross), fill: "none", stroke: v("--muted"), "stroke-width": 2, "stroke-dasharray": "5 4" }));
+  svg.append(mk("path", { d: path(net), fill: "none", stroke: v("--accent"), "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  const label = (txt, xx, yy, anchor) => { const t = mk("text", { x: xx, y: yy, "text-anchor": anchor }); t.textContent = txt; svg.append(t); };
+  label(points[0][0], L, H - 8, "start");
+  label(points[points.length - 1][0], W - R, H - 8, "end");
+  label(won(hi), L, T - 4, "start");
+  const cross = mk("line", { y1: T, y2: H - B, stroke: v("--muted"), "stroke-width": 1, visibility: "hidden" });
+  svg.append(cross);
+  svg.onpointermove = (ev) => {
+    const box = svg.getBoundingClientRect();
+    const i = Math.max(0, Math.min(points.length - 1, Math.round(((ev.clientX - box.left) / box.width * W - L) / (W - L - R) * (points.length - 1))));
+    const [d, n, c] = points[i];
+    cross.setAttribute("visibility", "visible"); cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i));
+    tip.hidden = false;
+    tip.textContent = `${d}  순수익 ${won(n)}, 비용 ${won(c)}`;
+    tip.style.left = `${(x(i) / W) * box.width}px`;
+    tip.style.top = `${(y(n + c) / H) * box.height}px`;
+  };
+  svg.onpointerleave = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); };
+}
+
 function renderHistory() {
   table("#trades", [["시각"], ["전략"], ["코인"], ["구분"], ["가격", true], ["이유"], ["손익", true]],
     S.trades.map((t) => [new Date(t.time).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" }), t.strategy || "-", t.market,
@@ -538,6 +614,7 @@ function render() {
   renderRecommend();
   renderClaude();
   renderMoney();
+  renderProfit();
   renderHistory();
   if (!dirty && !$("#form").contains(document.activeElement)) fillForm();
 }
