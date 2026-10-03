@@ -282,6 +282,7 @@ class Bot:
                 break
             rows += page
             to = page[-1]["candle_date_time_utc"] + "Z"
+            time.sleep(0.12)  # candles: 10 requests/s per IP, shared by every sleeve
         self.candles[m] = to_frame(rows)
 
     def _prices(self) -> dict[str, float]:

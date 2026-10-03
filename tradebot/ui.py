@@ -27,9 +27,10 @@ from .strategies import STRATEGIES
 PAGE = Path(__file__).with_name("ui.html")
 SECRET_KEYS = {"UPBIT_ACCESS_KEY": r"[A-Za-z0-9]{20,80}", "UPBIT_SECRET_KEY": r"[A-Za-z0-9]{20,80}",
                "TELEGRAM_BOT_TOKEN": r"\d+:[A-Za-z0-9_-]{20,}", "TELEGRAM_CHAT_ID": r"-?\d+",
-               "ANTHROPIC_API_KEY": r"sk-ant-[A-Za-z0-9_-]{20,}"}
+               "ANTHROPIC_API_KEY": r"sk-ant-[A-Za-z0-9_-]{20,}", "OPENAI_API_KEY": r"sk-[A-Za-z0-9_-]{20,}"}
 LABELS = {"UPBIT_ACCESS_KEY": "Access 키", "UPBIT_SECRET_KEY": "Secret 키",
-          "TELEGRAM_BOT_TOKEN": "텔레그램 봇 토큰", "TELEGRAM_CHAT_ID": "텔레그램 chat id", "ANTHROPIC_API_KEY": "Claude API 키"}
+          "TELEGRAM_BOT_TOKEN": "텔레그램 봇 토큰", "TELEGRAM_CHAT_ID": "텔레그램 chat id", "ANTHROPIC_API_KEY": "Claude API 키",
+          "OPENAI_API_KEY": "GPT(OpenAI) API 키"}
 CONFIG_KEYS = ("mode", "budget_krw", "paper_krw", "markets", "strategies", "claude_autopilot")
 
 
@@ -251,7 +252,7 @@ def status() -> dict:
         "first_run": mode == "paper" and log.empty,  # never ran yet: show the paper-trading onboarding
         "config": {"mode": mode, "budget_krw": cfg.budget_krw, "paper_krw": cfg.paper_krw,
                    "markets": cfg.markets, "strategies": cfg.strategies, "claude_autopilot": cfg.claude_autopilot},
-        "claude_set": bool(e.get("ANTHROPIC_API_KEY")), "paused": live.pause_info(),
+        "claude_set": bool(e.get("ANTHROPIC_API_KEY") or e.get("OPENAI_API_KEY")), "paused": live.pause_info(),
         "claude": json.loads(claude.REVIEW.read_text(encoding="utf-8")) if claude.REVIEW.exists() else None,
         "keys_set": bool(e.get("UPBIT_ACCESS_KEY") and e.get("UPBIT_SECRET_KEY")),
         "telegram_set": bool(e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID")),
@@ -306,7 +307,7 @@ def review_now() -> tuple[int, dict]:
     _use_saved_keys()
     out = claude.run(config.load())
     if out is None:
-        return 400, {"error": "Claude 검토를 하지 못했습니다. Claude API 키와 인터넷 연결을 확인하세요."}
+        return 400, {"error": "AI 검토를 하지 못했습니다. Claude 또는 GPT API 키와 인터넷 연결을 확인하세요."}
     return 200, out
 
 

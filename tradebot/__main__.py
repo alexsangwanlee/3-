@@ -208,9 +208,37 @@ def diagnose(cfg, client, env, telegram: bool = False) -> tuple[list[str], list[
             ok.append("텔레그램 알림: 켜짐" + (" (테스트 메시지 보냄)" if telegram else ""))
     else:
         ok.append("텔레그램 알림: 꺼짐 (선택, 제어판의 텔레그램 칸)")
-    ok.append(f"Claude 주간 검토: 켜짐 (자동 실행 {'켜짐' if cfg.claude_autopilot else '꺼짐'})"
-              if env.get("ANTHROPIC_API_KEY") else "Claude 주간 검토: 꺼짐 (선택, 제어판의 Claude 칸)")
+    ai = "Claude" if env.get("ANTHROPIC_API_KEY") else "GPT" if env.get("OPENAI_API_KEY") else None
+    ok.append(f"AI 주간 검토: {ai} 켜짐 (자동 실행 {'켜짐' if cfg.claude_autopilot else '꺼짐'})"
+              if ai else "AI 주간 검토: 꺼짐 (선택, 제어판의 AI 검토 칸에 Claude 또는 GPT 키)")
     return ok, problems
+
+
+def order_roundtrip(client, market: str = BTC, krw: int = 6_000) -> list[str]:
+    """Real-money end-to-end check: buy `krw` of `market` and sell it straight back through the bot's own order
+    path (identifier saved before sending, fills read from the exchange, lookup by identifier as after a crash).
+    6,000 KRW so the sell side stays above Upbit's 5,000 KRW minimum even after a dip."""
+    from .live import UpbitBroker
+
+    broker = UpbitBroker(client)
+    if broker.available_krw() < krw * 1.01:
+        raise SystemExit(f"KRW 잔고가 {krw:,}원보다 적어 시험 주문을 하지 않았습니다.")
+    price = client.tickers([market])[market]
+    vol, fill = broker.buy(market, krw, price, f"tradebot-test-{uuid.uuid4().hex}")
+    lines = [f"매수 체결: {vol:.8f} {market.split('-')[1]} @ {fill:,.0f}원 (주문 직전 시세 {price:,.0f}원)"]
+    ident = f"tradebot-test-{uuid.uuid4().hex}"
+    try:
+        sold, sell_fill = broker.sell(market, vol, fill, ident)
+    except Exception as e:
+        raise SystemExit(f"매도에 실패했습니다 ({_advice(e)}). 업비트 앱에서 {market} {vol:.8f}개를 직접 파세요.")
+    again = broker.resolve(ident)
+    lines.append(f"매도 체결: {sold:.8f} @ {sell_fill:,.0f}원")
+    lines.append("주문번호로 다시 조회: " + ("일치 (봇이 꺼졌다 켜져도 주문을 놓치지 않습니다)" if again and
+                                         abs(again[0] - sold) < 1e-12 else f"불일치 {again}"))
+    fee = config.Config().costs.fee
+    cost = vol * fill * (1 + fee) - sold * sell_fill * (1 - fee)
+    lines.append(f"왕복 비용 {cost:,.1f}원 = 수수료 {vol * fill * fee + sold * sell_fill * fee:,.1f}원 + 시세 차이·슬리피지")
+    return lines
 
 
 def cmd_check(cfg, args):
@@ -224,6 +252,12 @@ def cmd_check(cfg, args):
         print("  FAIL", line)
     if problems:
         raise SystemExit(1)
+    if getattr(args, "test_order", False):
+        print(f"\n실제 주문 점검: 업비트에서 {BTC} 6,000원어치를 사고 바로 팝니다. 비용은 수수료 약 6원과 시세 차이입니다.")
+        if input("계속하려면 yes 를 입력하세요: ").strip().lower() != "yes":
+            raise SystemExit("취소했습니다.")
+        for line in order_roundtrip(client):
+            print("  OK  ", line)
     print("준비 완료.")
 
 
@@ -244,7 +278,7 @@ def cmd_review(cfg, args):
 
     out = run(cfg)
     if out is None:
-        raise SystemExit("Claude 검토를 하지 못했습니다: 제어판에서 Claude API 키를 넣었는지, 인터넷이 되는지 확인하세요.")
+        raise SystemExit("AI 검토를 하지 못했습니다: 제어판에서 Claude 또는 GPT API 키를 넣었는지, 인터넷이 되는지 확인하세요.")
     rv = out["review"]
     print(rv["summary"], *(f"- 위험: {r}" for r in rv["risks"]), *(f"- 확인: {c}" for c in rv["user_checks"]),
           f"조치: {ACTIONS[rv['action']]} ({out['status']}) - {rv['reason']}", sep="\n")
@@ -381,13 +415,14 @@ def main():
     ap = argparse.ArgumentParser(prog="tradebot")
     ap.add_argument("--config", default="config.toml")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("check", help="verify config, API keys and alerts before running")
+    c = sub.add_parser("check", help="verify config, API keys and alerts before running")
+    c.add_argument("--test-order", action="store_true", help="also buy 6,000 KRW of BTC and sell it back (real money)")
     sub.add_parser("report", help="live/paper results vs the plan's expected ranges, and the next step")
     u = sub.add_parser("ui", help="open the control panel in the browser (settings, start/stop, status)")
     u.add_argument("--port", type=int, default=8765)
     u.add_argument("--no-browser", action="store_true")
     sub.add_parser("resume", help="clear the -35% kill switch after checking why it fired")
-    sub.add_parser("review", help="ask Claude to review the bot now (needs ANTHROPIC_API_KEY)")
+    sub.add_parser("review", help="ask Claude or GPT to review the bot now (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
     sub.add_parser("fetch", help="download/update candle history")
     b = sub.add_parser("backtest", help="backtest one strategy on the cached history")
     b.add_argument("--strategy", required=True, choices=list(STRATEGIES))

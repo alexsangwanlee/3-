@@ -11,6 +11,7 @@ from urllib.parse import unquote, urlencode
 import requests
 
 API = "https://api.upbit.com/v1"
+BLOCK_SECONDS = 60  # after a 418 (temporary IP block), stay quiet this long: asking again extends the block
 
 
 def _b64url(raw: bytes) -> str:
@@ -31,6 +32,7 @@ class UpbitClient:
         self.secret_key = secret_key
         self.timeout = timeout
         self.session = requests.Session()
+        self.blocked_until = 0.0
 
     # -- transport -------------------------------------------------------
     def _headers(self, params: dict | None) -> dict:
@@ -44,6 +46,8 @@ class UpbitClient:
         return {"Authorization": f"Bearer {make_jwt(payload, self.secret_key)}"}
 
     def _request(self, method: str, path: str, params: dict | None = None, auth: bool = False):
+        if time.time() < self.blocked_until:
+            raise RuntimeError("Upbit 418: 요청이 너무 많아 잠시 차단됨, 기다리는 중")
         for attempt in range(5):
             headers = self._headers(params) if auth else {}
             if method == "GET":
@@ -53,6 +57,9 @@ class UpbitClient:
             if r.status_code == 429:  # rate limited
                 time.sleep(0.5 * (attempt + 1))
                 continue
+            if r.status_code == 418:  # temporarily blocked for repeated 429s
+                self.blocked_until = time.time() + BLOCK_SECONDS
+                raise RuntimeError(f"Upbit 418: 요청이 너무 많아 {BLOCK_SECONDS}초 차단됨: {r.text[:200]}")
             if r.status_code >= 400:
                 raise RuntimeError(f"Upbit {method} {path} -> {r.status_code}: {r.text[:300]}")
             return r.json()

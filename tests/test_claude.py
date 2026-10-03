@@ -121,3 +121,39 @@ def test_what_was_already_learned_is_sent_as_a_cacheable_digest_not_rediscovered
     claude.run(config.Config())
     system = sent[0][1]["system"]
     assert "trailing stop" in system[-1]["text"] and system[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+class GPTReply(Reply):
+    def json(self):  # OpenAI Responses API shape
+        return {"status": "completed",
+                "output": [{"type": "reasoning", "summary": []},
+                           {"type": "message", "content": [{"type": "output_text", "text": json.dumps(self.review)}]}],
+                "usage": {"input_tokens": 2900, "output_tokens": 350, "input_tokens_details": {"cached_tokens": 1024}}}
+
+
+def test_gpt_reviews_when_only_an_openai_key_is_set(home, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test-key-0123456789abcdefghij")
+    sent = []
+
+    def post(url, headers, json, timeout):
+        sent.append((url, headers, json))
+        return GPTReply(review("pause_entries"))
+
+    monkeypatch.setattr(claude.requests, "post", post)
+    out = claude.run(config.Config(claude_autopilot=True))
+    url, headers, body = sent[0]
+    assert url == "https://api.openai.com/v1/responses" and headers["Authorization"].startswith("Bearer sk-proj-")
+    assert body["text"]["format"]["strict"] is True and body["text"]["format"]["schema"]["additionalProperties"] is False
+    assert "upbit-secret-never-sent-anywhere-123" not in json.dumps(body, ensure_ascii=False)
+    assert out["status"] == "applied" and live.entries_paused()  # same whitelist and autopilot rules as Claude
+    assert out["usage"] == {"input_tokens": 2900, "output_tokens": 350, "cache_read_input_tokens": 1024}
+    assert out["model"].startswith("gpt")
+
+
+def test_claude_is_used_when_both_keys_are_set(home, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test-key-0123456789abcdefghij")
+    sent = []
+    answer(monkeypatch, review("keep"), sent)
+    claude.run(config.Config())
+    assert sent[0][0]["x-api-key"].startswith("sk-ant-")

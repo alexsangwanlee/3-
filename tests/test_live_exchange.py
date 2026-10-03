@@ -258,3 +258,21 @@ def test_every_fill_records_its_fee_and_slippage_in_krw(tmp_path):
     assert rows["fee"].to_numpy() == pytest.approx(rows["value"].to_numpy() * FEE, abs=0.01)
     assert rows["value"].iloc[0] == pytest.approx(rows["qty"].iloc[0] * rows["price"].iloc[0])
     assert "slip_cost" in rows
+
+
+def test_the_real_money_check_buys_and_sells_back_through_the_bots_order_path(monkeypatch):
+    from tradebot.__main__ import order_roundtrip
+    ex = Exchange(krw=50_000)
+    lines = order_roundtrip(ex, krw=6_000)
+    assert ex.placed == [("buy", "KRW-BTC"), ("sell", "KRW-BTC")]
+    assert ex.coins["KRW-BTC"] == pytest.approx(0, abs=1e-8)  # nothing left behind
+    assert any("주문번호로 다시 조회" in line for line in lines)
+    assert ex.krw == pytest.approx(50_000 - 6_000 * 2 * FEE, abs=1)  # only the fees were spent
+
+
+def test_the_real_money_check_refuses_without_enough_krw():
+    from tradebot.__main__ import order_roundtrip
+    ex = Exchange(krw=3_000)
+    with pytest.raises(SystemExit):
+        order_roundtrip(ex, krw=6_000)
+    assert ex.placed == []

@@ -164,13 +164,13 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
         <div id="rec-msg" role="status" aria-live="polite"></div>
       </div>
       <div id="claude" hidden>
-        <h2>Claude 검토</h2>
+        <h2>AI 주간 검토</h2>
         <p class="muted" id="claude-when"></p>
         <p id="claude-summary"></p>
         <ul class="check" id="claude-points"></ul>
         <p id="claude-action"></p>
         <div class="form-actions">
-          <button type="button" class="primary" id="claude-approve" hidden>Claude 제안 실행</button>
+          <button type="button" class="primary" id="claude-approve" hidden>제안 실행</button>
           <button type="button" id="claude-run">지금 검토 받기</button>
         </div>
         <div id="claude-msg" role="status" aria-live="polite"></div>
@@ -233,13 +233,16 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
       <input type="text" inputmode="numeric" id="TELEGRAM_CHAT_ID" name="TELEGRAM_CHAT_ID" autocomplete="off" spellcheck="false" translate="no">
     </fieldset>
     <fieldset>
-      <legend>Claude 연동 (선택)</legend>
-      <p class="help" id="claude-help">console.anthropic.com 에서 API 키를 발급합니다. 매주 재검증이 끝나면 Claude가 장부·거래·실제 비용을 읽고
-        한국어로 검토해 텔레그램과 이 화면에 알려줍니다. Claude는 주문을 내지 않고 키도 보지 못합니다. 검토 한 번에 API 사용료가 조금 듭니다.</p>
+      <legend>AI 주간 검토 (선택, Claude 또는 GPT)</legend>
+      <p class="help" id="claude-help">둘 중 하나의 API 키만 넣으면 됩니다 (Claude: console.anthropic.com, GPT: platform.openai.com). 둘 다 넣으면 Claude를 씁니다.
+        매주 재검증이 끝나면 AI가 장부·거래·실제 비용을 읽고 한국어로 검토해 텔레그램과 이 화면에 알려줍니다.
+        AI는 주문을 내지 않고 키도 보지 못합니다. 검토 한 번에 API 사용료가 조금 듭니다.</p>
       <label class="field" for="ANTHROPIC_API_KEY">Claude API 키</label>
       <input type="password" id="ANTHROPIC_API_KEY" name="ANTHROPIC_API_KEY" autocomplete="off" spellcheck="false" translate="no" aria-describedby="claude-help">
+      <label class="field" for="OPENAI_API_KEY">GPT(OpenAI) API 키</label>
+      <input type="password" id="OPENAI_API_KEY" name="OPENAI_API_KEY" autocomplete="off" spellcheck="false" translate="no" aria-describedby="claude-help">
       <label class="choice" style="margin-top:12px"><input type="checkbox" id="claude_autopilot" name="claude_autopilot">
-        <span>자동 실행: 더 안전해지는 조치(신규 매수 멈춤, 검증을 통과한 전략 추천 적용)는 Claude가 바로 실행합니다.
+        <span>자동 실행: 더 안전해지는 조치(신규 매수 멈춤, 검증을 통과한 전략 추천 적용)는 AI가 바로 실행합니다.
           매수를 다시 허용하는 것은 항상 직접 승인합니다.</span></label>
     </fieldset>
     <fieldset>
@@ -411,7 +414,7 @@ function renderClaude() {
 $("#claude-run").addEventListener("click", async () => {
   const btn = $("#claude-run");
   btn.disabled = true;
-  say("#claude-msg", "Claude가 검토하는 중… (보통 1분 이내)");
+  say("#claude-msg", "AI가 검토하는 중… (보통 1분 이내)");
   try {
     const r = await api("/api/claude/review", {});
     say("#claude-msg", r.skipped ? "지난 검토 뒤로 바뀐 내용이 없어 그 검토를 그대로 보여줍니다 (토큰을 쓰지 않았습니다)." : "검토를 받았습니다.");
@@ -531,7 +534,7 @@ function fillForm() {
   $("#budget_krw").value = Math.round(c.budget_krw).toLocaleString("ko-KR");
   $("#UPBIT_ACCESS_KEY").placeholder = $("#UPBIT_SECRET_KEY").placeholder = S.keys_set ? "저장됨 (바꿀 때만 새로 입력)" : "붙여 넣기";
   $("#TELEGRAM_BOT_TOKEN").placeholder = S.telegram_set ? "저장됨 (바꿀 때만 새로 입력)" : "선택";
-  $("#ANTHROPIC_API_KEY").placeholder = S.claude_set ? "저장됨 (바꿀 때만 새로 입력)" : "선택";
+  $("#ANTHROPIC_API_KEY").placeholder = $("#OPENAI_API_KEY").placeholder = S.claude_set ? "저장됨 또는 선택 (바꿀 때만 새로 입력)" : "선택";
   $("#claude_autopilot").checked = !!c.claude_autopilot;
   const boxes = (id, name, all, chosen) => {
     const wrap = $(id);
@@ -584,14 +587,14 @@ $("#form").addEventListener("submit", async (ev) => {
     mode: f.get("mode"), paper_krw: f.get("paper_krw"), budget_krw: f.get("budget_krw"),
     strategies: f.getAll("strategies"), markets: f.getAll("markets"), claude_autopilot: $("#claude_autopilot").checked,
   };
-  for (const k of ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY"]) {
+  for (const k of ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
     if (f.get(k)) body[k] = f.get(k);
   }
   const save = $("#save");
   save.disabled = true;
   try {
     const r = await api("/api/settings", body);
-    for (const k of ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY"]) $(`#${k}`).value = "";
+    for (const k of ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) $(`#${k}`).value = "";
     dirty = false;
     say("#form-msg", r.restart_needed ? "설정을 저장했습니다. 봇이 돌고 있어서, 정지 후 다시 시작해야 적용됩니다." : "설정을 저장했습니다.");
     refresh();

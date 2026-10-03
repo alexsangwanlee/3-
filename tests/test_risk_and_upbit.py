@@ -50,3 +50,25 @@ def test_private_request_signs_query_hash():
     claims = jwt.decode(token, "k" * 32, algorithms=["HS256"])
     assert claims["access_key"] == "ak"
     assert claims["query_hash"] == hashlib.sha512(unquote(urlencode(params)).encode()).hexdigest()
+
+
+def test_a_418_block_pauses_all_requests_instead_of_hammering(monkeypatch):
+    """Upbit answers 418 when an IP keeps exceeding the rate limit; asking again during the block extends it."""
+    from tradebot import upbit
+    calls = []
+
+    class Blocked:
+        status_code, text, headers = 418, '{"error":{"name":"too_many_requests"}}', {}
+
+    c = UpbitClient()
+    monkeypatch.setattr(c.session, "get", lambda *a, **k: calls.append(1) or Blocked())
+    now = [1000.0]
+    monkeypatch.setattr(upbit.time, "time", lambda: now[0])
+    for _ in range(3):
+        with pytest.raises(RuntimeError, match="418|차단"):
+            c.tickers(["KRW-BTC"])
+    assert len(calls) == 1  # the second and third calls never reached Upbit
+    now[0] += upbit.BLOCK_SECONDS + 1
+    with pytest.raises(RuntimeError):
+        c.tickers(["KRW-BTC"])
+    assert len(calls) == 2  # tried again once the block should be over

@@ -1,6 +1,6 @@
-"""Claude reviews the bot once a week (and on demand) and can act, within limits.
+"""An AI (Claude, or GPT when only an OpenAI key is set) reviews the bot once a week and can act, within limits.
 
-Claude reads only the bot's own numbers: the plan report, recent trades, real costs, the weekly self-review and a
+It reads only the bot's own numbers: the plan report, recent trades, real costs, the weekly self-review and a
 little market context. It explains them in Korean and picks one action. It never places orders and never sees a key.
 
     keep                  nothing to do (the default)
@@ -24,6 +24,8 @@ from .report import flow_adjusted_returns, report
 log = logging.getLogger("tradebot")
 API = "https://api.anthropic.com/v1/messages"
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
+GPT_API = "https://api.openai.com/v1/responses"
+GPT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-6-astra")
 REVIEW = Path("state/claude_review.json")
 KNOWLEDGE = Path("results/knowledge.json")  # every idea already tested, so Claude never spends tokens rediscovering it
 ACTIONS = {"keep": "그대로 유지", "pause_entries": "신규 매수 멈춤", "apply_recommendation": "검증된 전략 추천 적용",
@@ -63,6 +65,7 @@ TOOL = {
             "user_checks": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["summary", "risks", "action", "reason", "user_checks"],
+        "additionalProperties": False,  # OpenAI strict mode needs it; Claude accepts it
     },
 }
 
@@ -126,7 +129,17 @@ def _system() -> list[dict]:
              "cache_control": {"type": "ephemeral"}}]
 
 
+def _clean(got: dict) -> dict:
+    """Model output is untrusted input: keep only known fields, known actions, bounded text."""
+    text = lambda v, n=600: str(v)[:n]  # noqa: E731
+    items = lambda v: [text(x, 300) for x in (v if isinstance(v, list) else [])][:6]  # noqa: E731
+    return {"summary": text(got.get("summary", "")), "risks": items(got.get("risks")),
+            "action": got.get("action") if got.get("action") in ACTIONS else "keep",
+            "reason": text(got.get("reason", ""), 400), "user_checks": items(got.get("user_checks"))}
+
+
 def ask(payload: dict, key: str) -> tuple[dict, dict]:
+    """Claude, through a forced tool call."""
     r = requests.post(API, headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                       json={"model": MODEL, "max_tokens": 2000, "system": _system(), "tools": [TOOL],
                             "tool_choice": {"type": "tool", "name": TOOL["name"]},
@@ -135,14 +148,27 @@ def ask(payload: dict, key: str) -> tuple[dict, dict]:
     r.raise_for_status()
     body = r.json()
     got = next(b["input"] for b in body["content"] if b.get("type") == "tool_use")
-    # model output is untrusted input: keep only known fields, known actions, bounded text
-    text = lambda v, n=600: str(v)[:n]  # noqa: E731
-    items = lambda v: [text(x, 300) for x in (v if isinstance(v, list) else [])][:6]  # noqa: E731
-    review = {"summary": text(got.get("summary", "")), "risks": items(got.get("risks")),
-              "action": got.get("action") if got.get("action") in ACTIONS else "keep",
-              "reason": text(got.get("reason", ""), 400), "user_checks": items(got.get("user_checks"))}
-    usage = {k: int(v) for k, v in (body.get("usage") or {}).items() if isinstance(v, int)}
-    return review, usage
+    return _clean(got), {k: int(v) for k, v in (body.get("usage") or {}).items() if isinstance(v, int)}
+
+
+def ask_gpt(payload: dict, key: str) -> tuple[dict, dict]:
+    """GPT, through the Responses API with a strict JSON schema. The fixed instructions come first, so OpenAI's
+    automatic prompt caching applies to them the same way."""
+    r = requests.post(GPT_API, headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
+                      json={"model": GPT_MODEL, "instructions": "\n\n".join(b["text"] for b in _system()),
+                            "input": json.dumps(payload, ensure_ascii=False, default=str),
+                            "text": {"format": {"type": "json_schema", "name": TOOL["name"],
+                                                "schema": TOOL["input_schema"], "strict": True}},
+                            "reasoning": {"effort": "low"}, "max_output_tokens": 4000},
+                      timeout=120)
+    r.raise_for_status()
+    body = r.json()
+    out = next(c["text"] for item in body.get("output", []) if item.get("type") == "message"
+               for c in item.get("content", []) if c.get("type") == "output_text")
+    u = body.get("usage") or {}
+    return _clean(json.loads(out)), {"input_tokens": int(u.get("input_tokens", 0)),
+                                     "output_tokens": int(u.get("output_tokens", 0)),
+                                     "cache_read_input_tokens": int((u.get("input_tokens_details") or {}).get("cached_tokens", 0))}
 
 
 def _possible(action: str) -> bool:
@@ -155,7 +181,7 @@ def _possible(action: str) -> bool:
 
 def apply(action: str, reason: str) -> None:
     if action == "pause_entries":
-        live.pause_entries(f"Claude: {reason}")
+        live.pause_entries(f"AI 검토: {reason}")
     elif action == "resume_entries":
         live.PAUSE_FILE.unlink(missing_ok=True)
     elif action == "apply_recommendation":
@@ -166,20 +192,20 @@ def apply(action: str, reason: str) -> None:
 
 def run(cfg: config.Config) -> dict | None:
     """Ask Claude, act if allowed, save and notify. None when no key is set or the API is unavailable."""
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
+    claude_key, gpt_key = os.environ.get("ANTHROPIC_API_KEY"), os.environ.get("OPENAI_API_KEY")
+    if not (claude_key or gpt_key):
         return None
     payload = facts(cfg)
     digest = hashlib.sha256(json.dumps({k: v for k, v in payload.items() if k != "market"}, sort_keys=True,
                                        ensure_ascii=False, default=str).encode()).hexdigest()
     last = json.loads(REVIEW.read_text(encoding="utf-8")) if REVIEW.exists() else {}
     if last.get("digest") == digest:  # nothing the bot knows has changed: no call, no tokens
-        log.info("Claude review skipped: nothing changed since %s", last.get("at"))
+        log.info("AI review skipped: nothing changed since %s", last.get("at"))
         return {**last, "skipped": True}
     try:
-        rv, usage = ask(payload, key)
+        rv, usage = ask(payload, claude_key) if claude_key else ask_gpt(payload, gpt_key)
     except Exception as e:  # never let the review break trading
-        log.warning("Claude review failed: %s", type(e).__name__)
+        log.warning("AI review failed: %s", type(e).__name__)
         return None
     if not _possible(rv["action"]):
         rv["action"] = "keep"
@@ -189,12 +215,13 @@ def run(cfg: config.Config) -> dict | None:
         if cfg.claude_autopilot and rv["action"] in AUTO:
             apply(rv["action"], rv["reason"])
             status = "applied"
-    out = {"at": pd.Timestamp.now(tz="UTC").isoformat(), "model": MODEL, "review": rv, "status": status,
+    out = {"at": pd.Timestamp.now(tz="UTC").isoformat(), "model": MODEL if claude_key else GPT_MODEL, "review": rv,
+           "status": status,
            "usage": usage, "digest": digest}
     REVIEW.parent.mkdir(exist_ok=True)
     REVIEW.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     label = ACTIONS[rv["action"]] + {"applied": " (자동 실행함)", "waiting": " (제어판에서 승인하면 실행)", "none": ""}[status]
-    notify(f"[tradebot] Claude 주간 검토\n{rv['summary']}\n조치: {label}")
+    notify(f"[tradebot] AI 주간 검토 ({out['model']})\n{rv['summary']}\n조치: {label}")
     return out
 
 
