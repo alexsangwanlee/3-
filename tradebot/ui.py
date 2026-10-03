@@ -20,16 +20,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import config, live
+from . import claude, config, live
 from .report import report
 from .strategies import STRATEGIES
 
 PAGE = Path(__file__).with_name("ui.html")
 SECRET_KEYS = {"UPBIT_ACCESS_KEY": r"[A-Za-z0-9]{20,80}", "UPBIT_SECRET_KEY": r"[A-Za-z0-9]{20,80}",
-               "TELEGRAM_BOT_TOKEN": r"\d+:[A-Za-z0-9_-]{20,}", "TELEGRAM_CHAT_ID": r"-?\d+"}
+               "TELEGRAM_BOT_TOKEN": r"\d+:[A-Za-z0-9_-]{20,}", "TELEGRAM_CHAT_ID": r"-?\d+",
+               "ANTHROPIC_API_KEY": r"sk-ant-[A-Za-z0-9_-]{20,}"}
 LABELS = {"UPBIT_ACCESS_KEY": "Access 키", "UPBIT_SECRET_KEY": "Secret 키",
-          "TELEGRAM_BOT_TOKEN": "텔레그램 봇 토큰", "TELEGRAM_CHAT_ID": "텔레그램 chat id"}
-CONFIG_KEYS = ("mode", "budget_krw", "paper_krw", "markets", "strategies")
+          "TELEGRAM_BOT_TOKEN": "텔레그램 봇 토큰", "TELEGRAM_CHAT_ID": "텔레그램 chat id", "ANTHROPIC_API_KEY": "Claude API 키"}
+CONFIG_KEYS = ("mode", "budget_krw", "paper_krw", "markets", "strategies", "claude_autopilot")
 
 
 # -- settings files ----------------------------------------------------------
@@ -67,6 +68,11 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
                 out[key] = ms
             else:
                 errors.append("마켓은 KRW-BTC 처럼 'KRW-코인' 형식으로 하나 이상 고르세요.")
+        elif key == "claude_autopilot":
+            if isinstance(value, bool):
+                out[key] = value
+            else:
+                errors.append("Claude 자동 실행은 켜기/끄기만 고를 수 있습니다.")
         elif key == "strategies":
             if value and all(s in STRATEGIES and s != "hold" for s in value):
                 out[key] = list(value)
@@ -98,6 +104,8 @@ def upsert_env(text: str, updates: dict) -> str:
 
 
 def _toml(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
     if isinstance(v, list):
         return "[" + ", ".join(_toml(x) for x in v) + "]"
     return json.dumps(v, ensure_ascii=False) if isinstance(v, str) else str(v)
@@ -141,6 +149,11 @@ def read_env(path=".env") -> dict:
 def env() -> dict:
     """What the bot will see: the real environment, overridden by the .env file the page just saved."""
     return {**os.environ, **{k: v for k, v in read_env().items() if v}}
+
+
+def _use_saved_keys() -> None:
+    """Keys saved in the page after this panel started: make them visible to code running in this process."""
+    os.environ.update({k: v for k, v in read_env().items() if v and k in SECRET_KEYS})
 
 
 def save(payload: dict) -> tuple[int, dict]:
@@ -217,7 +230,9 @@ def status() -> dict:
         "halted": [s["strategy"] for s in sleeves if s["halted"]],  # -35% kill switch fired: no new buys
         "first_run": mode == "paper" and log.empty,  # never ran yet: show the paper-trading onboarding
         "config": {"mode": mode, "budget_krw": cfg.budget_krw, "paper_krw": cfg.paper_krw,
-                   "markets": cfg.markets, "strategies": cfg.strategies},
+                   "markets": cfg.markets, "strategies": cfg.strategies, "claude_autopilot": cfg.claude_autopilot},
+        "claude_set": bool(e.get("ANTHROPIC_API_KEY")), "paused": live.pause_info(),
+        "claude": json.loads(claude.REVIEW.read_text(encoding="utf-8")) if claude.REVIEW.exists() else None,
         "keys_set": bool(e.get("UPBIT_ACCESS_KEY") and e.get("UPBIT_SECRET_KEY")),
         "telegram_set": bool(e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID")),
         "equity": equity, "funded": funded, "positions": positions, "trades": trades, "log": tail,
@@ -237,7 +252,7 @@ def check(telegram: bool = False) -> dict:
     e = env()
     ok, problems = diagnose(config.load(), UpbitClient(e.get("UPBIT_ACCESS_KEY"), e.get("UPBIT_SECRET_KEY")), e)
     if telegram and e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID"):
-        os.environ.update({k: e[k] for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")})
+        _use_saved_keys()
         if not live.send_telegram("tradebot 연결 점검: 이 메시지가 보이면 알림 설정 완료입니다."):
             ok = [line for line in ok if not line.startswith("텔레그램")]
             problems.append("텔레그램 전송 실패: 토큰과 chat id 를 확인하고, 텔레그램에서 내 봇에게 /start 를 먼저 보내세요.")
@@ -270,6 +285,19 @@ def start(live_confirmed: bool) -> tuple[int, dict]:
             why = out.read_bytes()[before:].decode("utf-8", "replace").strip().splitlines()[-5:]
             return 500, {"error": "봇이 바로 멈췄습니다.", "problems": why}
     return 200, {"started": True}
+
+
+def review_now() -> tuple[int, dict]:
+    _use_saved_keys()
+    out = claude.run(config.load())
+    if out is None:
+        return 400, {"error": "Claude 검토를 하지 못했습니다. Claude API 키와 인터넷 연결을 확인하세요."}
+    return 200, out
+
+
+def resume_entries() -> tuple[int, dict]:
+    live.PAUSE_FILE.unlink(missing_ok=True)
+    return 200, {"resumed": True}
 
 
 def stop() -> tuple[int, dict]:
@@ -321,7 +349,9 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._send(400, {"error": "bad json"})
         routes = {"/api/settings": lambda: save(body), "/api/check": lambda: (200, check(telegram=True)),
-                  "/api/start": lambda: start(bool(body.get("live_confirmed"))), "/api/stop": stop}
+                  "/api/start": lambda: start(bool(body.get("live_confirmed"))), "/api/stop": stop,
+                  "/api/claude/review": review_now, "/api/claude/approve": lambda: (200, {"status": claude.approve(config.load())}),
+                  "/api/entries/resume": resume_entries}
         if self.path not in routes:
             return self._send(404, {"error": "not found"})
         try:

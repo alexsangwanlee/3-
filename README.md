@@ -196,6 +196,31 @@ docker compose up -d && docker compose logs -f
 샤프는 1.33 → 1.27로 떨어졌고 AUC는 0.545였습니다. 승률 15%인 ema_cross에서 +90% 거래 하나를 건너뛴 손해가,
 작은 손실 여러 건을 피한 이득보다 컸습니다([`results/metalabel.md`](results/metalabel.md)).
 
+## Claude 연동: 매주 스스로 검토하고 안전한 조치는 직접 실행
+
+제어판 **설정 → Claude 연동**에 Anthropic API 키(console.anthropic.com)를 넣으면, 매주 재검증이 끝날 때 Claude가 봇을 검토합니다.
+`./start.sh review`나 제어판의 **지금 검토 받기**로 언제든 받을 수도 있습니다.
+
+- **Claude가 보는 것:** 운영 계획 점검 결과, 최근 수익, 최근 거래 30건, 실제 슬리피지, 주간 자가 점검 결과, 오류 로그 요약,
+  공포·탐욕 지수와 테더 프리미엄. 모두 봇이 만든 숫자이고, **API 키나 비밀값은 보내지 않습니다.**
+- **Claude가 하는 것:** 한국어로 요약하고, 위험 신호와 직접 확인할 것을 알려주고, 아래 조치 중 하나를 고릅니다.
+  결과는 제어판과 텔레그램으로 옵니다.
+
+| 조치 | 언제 고르나 | 자동 실행(설정에서 켰을 때) |
+|---|---|---|
+| 그대로 유지 | 기본값. 계획의 정상 범위 안이면 손실 달에도 이것 | – |
+| 신규 매수 멈춤 | 점검 필요, 오류 반복, 슬리피지 이상, 장부 이상, 비상 정지 | ✅ 바로 실행 (보유분 손절·청산은 계속) |
+| 검증된 전략 추천 적용 | 주간 자가 점검이 표본외 검증을 통과한 추천을 냈을 때만 | ✅ 바로 실행 |
+| 신규 매수 다시 허용 | 멈춘 이유가 사라졌을 때 | ❌ 항상 직접 승인 |
+
+**원칙: Claude는 봇을 더 안전하게만 바꿀 수 있고, 위험을 늘리는 일은 사람이 정합니다.**
+- 주문은 내지 않습니다. 손절은 10초 단위로 봇이 직접 합니다.
+- 예산 증액, 레버리지, 리스크 한도는 제안하지 못하게 했습니다.
+- 목록에 없는 조치나 검증되지 않은 전략은 무시됩니다.
+- API가 실패해도 매매는 그대로 계속됩니다.
+
+모델은 기본으로 `claude-opus-5-5`를 쓰고, 환경 변수 `CLAUDE_MODEL`로 바꿀 수 있습니다. 검토는 주 1회라 API 사용료는 적지만 0원은 아닙니다.
+
 ## 비상 정지(-35%)를 풀려면
 
 전략 장부가 고점 대비 -35%가 되면 그 전략은 전량 청산하고 새 매수를 멈춥니다. 다시 켜도 풀리지 않습니다.
@@ -212,6 +237,7 @@ docker compose up -d && docker compose logs -f
 ./start.sh report         # 운영 계획 대비 현재 상태: 단계, 정상 범위 여부, 증액·출금 시점
 ./start.sh run            # 화면 없이 봇 실행 (모의/실거래는 config.toml 의 mode, 매주 자동 재최적화)
 ./start.sh resume         # 비상 정지(-35%) 해제
+./start.sh review         # Claude 검토 지금 받기 (Claude API 키 필요)
 ./start.sh fetch          # 업비트 4시간봉 5년치 다운로드
 ./start.sh optimize       # 4개 전략 walk-forward + 자가 점검 → state/selected.json
 ./start.sh backtest --strategy donchian --params '{"n": 96, "m": 12, "stop_atr": 3}'
@@ -242,10 +268,11 @@ tradebot/
   optimize.py    walk-forward 최적화
   live.py        모의/실거래 루프, 전략별 장부, 주문 확인, 텔레그램 알림
   learn.py       자가 학습: 실제 슬리피지, 전략 구성 추천 (검증 통과 시에만)
+  claude.py      Claude 주간 검토와 제한된 자동 조치 (주문은 하지 않음)
   report.py      운영 계획 판정 (단계, 정상 범위, 증액·출금)
   ui.py/ui.html  제어판 (127.0.0.1 전용, 키는 쓰기만 가능)
   config.py      config.toml / .env 읽기
-  __main__.py    CLI: ui / check / report / run / resume / fetch / optimize / backtest
+  __main__.py    CLI: ui / check / report / run / resume / review / fetch / optimize / backtest
 results/         운영 계획, 표본외 결과, 선택된 전략, 팀 실험, 예측과 변수(bands.json), 워뇨띠 분석
 scripts/         결과 재현용 (scenarios.py, wonyotti_study.py, guard_ablation.py)
 tests/           미래참조 방지, 체결 모델, 손절 규칙, 주문 장애(시간초과·부분체결·상장폐지), 키 유출 방지, 제어판 테스트

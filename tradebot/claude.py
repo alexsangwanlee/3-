@@ -1,0 +1,194 @@
+"""Claude reviews the bot once a week (and on demand) and can act, within limits.
+
+Claude reads only the bot's own numbers: the plan report, recent trades, real costs, the weekly self-review and a
+little market context. It explains them in Korean and picks one action. It never places orders and never sees a key.
+
+    keep                  nothing to do (the default)
+    pause_entries         stop new buys; open positions keep their stops and exits   } safer: autopilot may run these
+    apply_recommendation  use the strategies the weekly self-review already validated }
+    resume_entries        allow new buys again: riskier, so it always waits for the user
+"""
+import json
+import logging
+import os
+from pathlib import Path
+
+import pandas as pd
+import requests
+
+from . import config, live
+from .live import notify
+from .report import flow_adjusted_returns, report
+
+log = logging.getLogger("tradebot")
+API = "https://api.anthropic.com/v1/messages"
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
+REVIEW = Path("state/claude_review.json")
+ACTIONS = {"keep": "그대로 유지", "pause_entries": "신규 매수 멈춤", "apply_recommendation": "검증된 전략 추천 적용",
+           "resume_entries": "신규 매수 다시 허용"}
+AUTO = {"pause_entries", "apply_recommendation"}  # what autopilot may do without asking: never adds risk
+
+SYSTEM = """You review a small long-only trend-following bot on Upbit (Korean crypto spot exchange) for its owner,
+a non-programmer. You receive JSON facts the bot produced. Reply only through the weekly_review tool, in Korean,
+in plain short sentences.
+
+Rules:
+- Use only the facts given. Never predict prices.
+- The rules were validated out of sample: about half of all months lose money and that is normal. Do not react to a
+  bad week or month that the report calls 정상 범위.
+- Pick exactly one action:
+  keep: the default.
+  pause_entries: only if at least one holds, and name which: the report says 점검 필요; the bot logged repeated
+    errors; real slippage is far above the assumption (over 0.3% per side); a ledger looks inconsistent
+    (for example negative cash); the kill switch fired.
+  apply_recommendation: only if selection.self_review.recommend is not null (it passed the bot's own
+    out-of-sample test). Never propose strategies yourself.
+  resume_entries: only if entries are paused and the reason no longer holds.
+- Never suggest raising the budget, adding leverage or loosening risk limits. That is the owner's decision under
+  results/plan.md.
+- user_checks: concrete things the owner should look at, if any."""
+
+TOOL = {
+    "name": "weekly_review",
+    "description": "The weekly review of the trading bot, shown to its owner and possibly acted on.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string", "description": "3-5 Korean sentences: how the bot did and why"},
+            "risks": {"type": "array", "items": {"type": "string"}, "description": "anything off-plan, in Korean"},
+            "action": {"type": "string", "enum": list(ACTIONS)},
+            "reason": {"type": "string", "description": "which rule justifies the action, in Korean"},
+            "user_checks": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["summary", "risks", "action", "reason", "user_checks"],
+    },
+}
+
+
+def _csv_tail(path: str, n: int) -> list[dict]:
+    p = Path(path)
+    return pd.read_csv(p).tail(n).fillna("").to_dict("records") if p.exists() else []
+
+
+def market_context() -> dict:
+    """Best effort: Fear & Greed and the Upbit USDT premium (a kimchi-premium proxy). Missing is fine."""
+    out = {}
+    try:
+        out["fear_greed"] = int(requests.get("https://api.alternative.me/fng/", timeout=10).json()["data"][0]["value"])
+        usdt = float(requests.get("https://api.upbit.com/v1/ticker", params={"markets": "KRW-USDT"},
+                                  timeout=10).json()[0]["trade_price"])
+        fx = requests.get("https://api.frankfurter.dev/v1/latest", params={"from": "USD", "to": "KRW"},
+                          timeout=10).json()["rates"]["KRW"]
+        out["usdt_premium"] = round(usdt / fx - 1, 4)
+    except Exception:
+        log.info("market context unavailable")
+    return out
+
+
+def facts(cfg: config.Config) -> dict:
+    """Everything Claude may see. Built from files the bot writes; no environment variable is read here."""
+    eq_path = f"logs/{cfg.mode}_equity.csv"
+    sel = config.selection()
+    recent = {}
+    if Path(eq_path).exists():
+        r = flow_adjusted_returns(pd.read_csv(eq_path))
+        recent = {f"last_{n}d": round(float((1 + r.iloc[-n:]).prod() - 1), 4) for n in (7, 30, 90) if len(r) >= n}
+    tail = Path("logs/bot.log").read_text(encoding="utf-8", errors="replace").splitlines()[-2000:] \
+        if Path("logs/bot.log").exists() else []
+    problems = [line[20:200] for line in tail if " WARNING " in line or " ERROR " in line]
+    return {
+        "mode": cfg.mode, "budget_krw": cfg.budget_krw if cfg.mode == "live" else cfg.paper_krw,
+        "strategies": cfg.strategies, "markets": cfg.markets,
+        "report": report(cfg.mode, eq_path), "returns": recent,
+        "recent_trades": _csv_tail(f"logs/{cfg.mode}_trades.csv", 30),
+        "selection": {"generated_at": sel.get("generated_at"), "costs_used": sel.get("costs_used"),
+                      "self_review": sel.get("self_review"),
+                      "sleeves": {k: {"tradable": v.get("tradable"), "params": v.get("params")}
+                                  for k, v in sel.get("sleeves", {}).items()}},
+        "entries_paused": live.pause_info(), "kill_switch": _halted(cfg.mode),
+        "log_problems": {"count": len(problems), "last": problems[-8:]},
+        "market": market_context(),
+        "evidence": "Gates on Fear & Greed, funding, kimchi premium and ML/foundation-model entry filters were tested "
+                    "out of sample and not adopted (results/data_study.md). Do not recommend them.",
+    }
+
+
+def _halted(mode: str) -> list[str]:
+    out = []
+    for p in Path("state").glob(f"{mode}_*.json"):
+        st = json.loads(p.read_text(encoding="utf-8"))
+        if (st.get("guard") or {}).get("halted"):
+            out.append(p.stem.removeprefix(f"{mode}_"))
+    return out
+
+
+def ask(payload: dict, key: str) -> dict:
+    r = requests.post(API, headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                      json={"model": MODEL, "max_tokens": 2000, "system": SYSTEM, "tools": [TOOL],
+                            "tool_choice": {"type": "tool", "name": TOOL["name"]},
+                            "messages": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}]},
+                      timeout=120)
+    r.raise_for_status()
+    got = next(b["input"] for b in r.json()["content"] if b.get("type") == "tool_use")
+    # model output is untrusted input: keep only known fields, known actions, bounded text
+    text = lambda v, n=600: str(v)[:n]  # noqa: E731
+    items = lambda v: [text(x, 300) for x in (v if isinstance(v, list) else [])][:6]  # noqa: E731
+    return {"summary": text(got.get("summary", "")), "risks": items(got.get("risks")),
+            "action": got.get("action") if got.get("action") in ACTIONS else "keep",
+            "reason": text(got.get("reason", ""), 400), "user_checks": items(got.get("user_checks"))}
+
+
+def _possible(action: str) -> bool:
+    if action == "apply_recommendation":
+        return bool((config.selection().get("self_review") or {}).get("recommend"))
+    if action == "resume_entries":
+        return live.entries_paused()
+    return action != "keep"
+
+
+def apply(action: str, reason: str) -> None:
+    if action == "pause_entries":
+        live.pause_entries(f"Claude: {reason}")
+    elif action == "resume_entries":
+        live.PAUSE_FILE.unlink(missing_ok=True)
+    elif action == "apply_recommendation":
+        from .ui import save  # same validated path as the panel's button
+
+        save({"strategies": config.selection()["self_review"]["recommend"]})
+
+
+def run(cfg: config.Config) -> dict | None:
+    """Ask Claude, act if allowed, save and notify. None when no key is set or the API is unavailable."""
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return None
+    try:
+        rv = ask(facts(cfg), key)
+    except Exception as e:  # never let the review break trading
+        log.warning("Claude review failed: %s", type(e).__name__)
+        return None
+    if not _possible(rv["action"]):
+        rv["action"] = "keep"
+    status = "none"
+    if rv["action"] != "keep":
+        status = "waiting"
+        if cfg.claude_autopilot and rv["action"] in AUTO:
+            apply(rv["action"], rv["reason"])
+            status = "applied"
+    out = {"at": pd.Timestamp.now(tz="UTC").isoformat(), "model": MODEL, "review": rv, "status": status}
+    REVIEW.parent.mkdir(exist_ok=True)
+    REVIEW.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    label = ACTIONS[rv["action"]] + {"applied": " (자동 실행함)", "waiting": " (제어판에서 승인하면 실행)", "none": ""}[status]
+    notify(f"[tradebot] Claude 주간 검토\n{rv['summary']}\n조치: {label}")
+    return out
+
+
+def approve(cfg: config.Config) -> str:
+    """The user approved the waiting action in the control panel."""
+    out = json.loads(REVIEW.read_text(encoding="utf-8"))
+    if out["status"] != "waiting" or not _possible(out["review"]["action"]):
+        return out["status"]
+    apply(out["review"]["action"], out["review"]["reason"])
+    out["status"] = "applied"
+    REVIEW.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    return "applied"

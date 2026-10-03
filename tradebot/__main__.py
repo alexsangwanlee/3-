@@ -198,6 +198,8 @@ def diagnose(cfg, client, env) -> tuple[list[str], list[str]]:
         ok.append("텔레그램 알림: 켜짐")
     else:
         ok.append("텔레그램 알림: 꺼짐 (선택, 제어판의 텔레그램 칸)")
+    ok.append(f"Claude 주간 검토: 켜짐 (자동 실행 {'켜짐' if cfg.claude_autopilot else '꺼짐'})"
+              if env.get("ANTHROPIC_API_KEY") else "Claude 주간 검토: 꺼짐 (선택, 제어판의 Claude 칸)")
     return ok, problems
 
 
@@ -229,6 +231,17 @@ def cmd_report(cfg, args):
     from .report import report
 
     print("\n".join(report(cfg.mode, f"logs/{cfg.mode}_equity.csv")))
+
+
+def cmd_review(cfg, args):
+    from .claude import ACTIONS, run
+
+    out = run(cfg)
+    if out is None:
+        raise SystemExit("Claude 검토를 하지 못했습니다: 제어판에서 Claude API 키를 넣었는지, 인터넷이 되는지 확인하세요.")
+    rv = out["review"]
+    print(rv["summary"], *(f"- 위험: {r}" for r in rv["risks"]), *(f"- 확인: {c}" for c in rv["user_checks"]),
+          f"조치: {ACTIONS[rv['action']]} ({out['status']}) - {rv['reason']}", sep="\n")
 
 
 def cmd_resume(cfg, args):
@@ -269,6 +282,9 @@ def reoptimize(cfg) -> None:
         logging.info("주간 재최적화 완료: 새 설정으로 다시 시작합니다")
     except Exception:
         logging.exception("re-optimisation failed; keeping the previous selection")
+    from .claude import run as claude_review
+
+    claude_review(cfg)  # no-op without ANTHROPIC_API_KEY
 
 
 def cmd_run(cfg, args):
@@ -335,6 +351,7 @@ def _run_loop(cfg, args, live, client):
     broker = UpbitBroker(client) if live else None  # paper: every sleeve gets its own simulated holdings
     tried, announced = 0.0, None
     while not stop_requested():
+        cfg.strategies = config.load(args.config).strategies  # Claude or the panel may have applied a recommendation
         job = None
         if needs_reoptimize(cfg) and time.time() - tried > 3600:
             tried = time.time()  # ponytail: a failed run is retried hourly; more often only hammers Upbit
@@ -368,6 +385,7 @@ def main():
     u.add_argument("--port", type=int, default=8765)
     u.add_argument("--no-browser", action="store_true")
     sub.add_parser("resume", help="clear the -35% kill switch after checking why it fired")
+    sub.add_parser("review", help="ask Claude to review the bot now (needs ANTHROPIC_API_KEY)")
     sub.add_parser("fetch", help="download/update candle history")
     b = sub.add_parser("backtest", help="backtest one strategy on the cached history")
     b.add_argument("--strategy", required=True, choices=list(STRATEGIES))
@@ -386,7 +404,7 @@ def main():
                         handlers=[logging.StreamHandler(), *(_file_handler() if args.cmd == "run" else [])])
     config.load_env()
     cfg = config.load(args.config)
-    {"ui": cmd_ui, "check": cmd_check, "report": cmd_report, "resume": cmd_resume, "fetch": cmd_fetch, "backtest": cmd_backtest, "optimize": cmd_optimize, "run": cmd_run}[args.cmd](cfg, args)
+    {"ui": cmd_ui, "check": cmd_check, "report": cmd_report, "resume": cmd_resume, "review": cmd_review, "fetch": cmd_fetch, "backtest": cmd_backtest, "optimize": cmd_optimize, "run": cmd_run}[args.cmd](cfg, args)
 
 
 def _file_handler():

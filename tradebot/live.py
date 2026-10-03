@@ -24,10 +24,29 @@ MIN_ORDER_KRW = 5000
 PID_FILE = Path("state/bot.pid")
 STOP_FILE = Path("state/stop.request")  # the control panel's stop button: finish the step, save, exit
 STOP = threading.Event()                # Ctrl+C / SIGTERM do the same
+PAUSE_FILE = Path("state/entries_paused.json")  # no new buys (Claude's review or the user); stops still run
 
 
 def stop_requested() -> bool:
     return STOP.is_set() or STOP_FILE.exists()
+
+
+def entries_paused() -> bool:
+    return PAUSE_FILE.exists()
+
+
+def pause_info() -> dict | None:
+    try:
+        return json.loads(PAUSE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"reason": "?"} if PAUSE_FILE.exists() else None
+
+
+def pause_entries(reason: str) -> None:
+    PAUSE_FILE.parent.mkdir(exist_ok=True)
+    PAUSE_FILE.write_text(json.dumps({"reason": reason, "at": pd.Timestamp.now(tz="UTC").isoformat()},
+                                     ensure_ascii=False), encoding="utf-8")
+    log.warning("new buys paused: %s", reason)
 
 
 def _alive(pid: int) -> bool:
@@ -420,7 +439,7 @@ class Bot:
             if risk.lock_gain and risk.lock_giveback and pos["high"] >= pos["entry"] * (1 + risk.lock_gain):
                 pos["stop"] = max(pos["stop"] or 0.0, pos["high"] * (1 - risk.lock_giveback))
 
-        if self.guard.can_trade and self.cfg.allow_entries and not self.state.get("flatten"):
+        if self.guard.can_trade and self.cfg.allow_entries and not self.state.get("flatten") and not entries_paused():
             eq = self.equity(prices)
             alloc = self.cfg.risk.alloc_per_market or 1.0 / len(self.cfg.markets)
             vols = [rows[m]["vol"] if m in rows else math.nan for m in self.cfg.markets]

@@ -32,6 +32,7 @@ class Config:
     history_days: int = 1825
     train_days: int = 180
     test_days: int = 60
+    claude_autopilot: bool = False  # True: Claude's weekly review may pause buys / apply validated advice by itself
 
     def sleeves(self) -> list[tuple[str, dict, bool]]:
         """[(strategy, params, tradable)] from the last `python -m tradebot optimize`, for the strategies it covers.

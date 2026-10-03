@@ -227,3 +227,19 @@ def test_an_unconfirmed_sell_is_not_sent_again_by_the_liquidation_in_the_same_st
     ex.lookup = "ok"
     bot.step(now(ex, 2))
     assert bot.state["positions"] == {} and ex.placed.count(("sell", "KRW-BTC")) == 1
+
+
+def test_paused_buys_still_let_stops_fire(tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "PAUSE_FILE", tmp_path / "paused.json")
+    live.pause_entries("Claude: 점검 필요")
+    ex = Exchange(krw=1_000_000)
+    bot = make_bot(tmp_path, ex, markets=["KRW-BTC", "KRW-ETH"])
+    hold(bot, ex, "KRW-ETH", 1000.0, stop=ex.price * 0.95)
+    bot.step(now(ex))
+    assert ("buy", "KRW-BTC") not in ex.placed  # paused: the hold strategy would buy otherwise
+    ex.price *= 0.90
+    bot.step(now(ex, 1))
+    assert "KRW-ETH" not in bot.state["positions"]
+    live.PAUSE_FILE.unlink()
+    bot.step(now(ex, 2))
+    assert ("buy", "KRW-BTC") in ex.placed
