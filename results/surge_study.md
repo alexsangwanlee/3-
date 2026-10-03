@@ -46,4 +46,26 @@ load their 4h candles, skip coins under an Upbit warning, and trade them through
 
 ## Results
 
-(filled in after the run)
+Run with `scripts/surge_study.py`. "Surge-coin trades" counts the closed trades in coins outside the core 5 on the
+development period.
+
+| variant | dev total | dev CAGR | CAGR halves | dev MDD | Sharpe | lockbox | surge-coin trades (dev) | verdict |
+|---|---|---|---|---|---|---|---|---|
+| **baseline: 5 coins (production)** | +197.1% | +31.3% | +34.5% / +28.1% | -9.9% | 1.80 | +6.5% | 0 in 0 coins, 0% won, mean +0.0% |  |
+| **S: 5x turnover, top 20, 7 days, 0.3% slippage** | -33.0% | -9.5% | +0.5% / -18.5% | -36.0% | -0.40 | +10.3% | 627 in 141 coins, 19% won, mean -4.5% | reject (higher CAGR, both halves, MDD ≥ -30%) |
+| cost check: S with 0.6% slippage | -45.7% | -14.2% | -2.0% / -24.8% | -45.7% | -0.67 | +26.3% | 622 in 139 coins, 18% won, mean -5.4% | reject (higher CAGR, both halves, MDD ≥ -30%) |
+| robustness: 3-day window | -0.9% | -0.2% | +17.0% / -14.9% | -33.1% | 0.08 | +11.8% | 437 in 128 coins, 18% won, mean -4.5% | reject (higher CAGR, both halves, MDD ≥ -30%) |
+| robustness: 3x turnover | -45.1% | -13.9% | +5.4% / -29.7% | -53.2% | -0.67 | +32.8% | 669 in 143 coins, 19% won, mean -4.1% | reject (higher CAGR, both halves, MDD ≥ -30%) |
+
+**Verdict: rejected. Every variant fails every development rule, even though survivorship bias works in its favour.**
+- Variant S loses 33% on the development period, where the 5 coins alone make +197%. Its worst drawdown, -36%, is past
+  the -35% kill switch.
+- The surge coins themselves are the cause: 627 trades in 141 coins, 19% of them winners, an average of -4.5% per trade
+  after costs. The same rules that ride trends on the large coins mostly buy the top of a burst.
+- It is not a cost question: even at 0.3% slippage it loses, and at 0.6% it loses more. Neither a shorter window (3 days)
+  nor a looser trigger (3 ×) changes the verdict.
+- The lockbox was printed for every row and is higher than the baseline's (+10.3% vs +6.5% for S). Six months against
+  four years of clear losses is not evidence; by the pre-registered rule the lockbox is only consulted for a variant that
+  passed the development period, and none did.
+
+Nothing reaches production.
