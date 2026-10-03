@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import claude, config, live
-from .report import report
+from .report import report, totals
 from .strategies import STRATEGIES
 
 PAGE = Path(__file__).with_name("ui.html")
@@ -95,7 +95,7 @@ def upsert_env(text: str, updates: dict) -> str:
     lines = text.splitlines()
     for key, value in updates.items():
         line = f"{key}={_clean(value)}"
-        hit = next((i for i, l in enumerate(lines) if not l.lstrip().startswith("#") and l.split("=", 1)[0].strip() == key), None)
+        hit = next((i for i, x in enumerate(lines) if not x.lstrip().startswith("#") and x.split("=", 1)[0].strip() == key), None)
         if hit is None:
             lines.append(line)
         else:
@@ -125,7 +125,7 @@ def _comment(line: str) -> str:
 def set_toml_top(text: str, updates: dict) -> str:
     """Change top-level `key = value` lines, keeping comments and everything under [tables]."""
     lines = text.splitlines()
-    end = next((i for i, l in enumerate(lines) if l.lstrip().startswith("[")), len(lines))
+    end = next((i for i, x in enumerate(lines) if x.lstrip().startswith("[")), len(lines))
     for key, value in updates.items():
         new = f"{key} = {_toml(value)}"
         hit = next((i for i in range(end) if re.match(rf"\s*{re.escape(key)}\s*=", lines[i])), None)
@@ -142,7 +142,8 @@ def read_env(path=".env") -> dict:
     p = Path(path)
     if not p.exists():
         return {}
-    pairs = (l.split("=", 1) for l in p.read_text(encoding="utf-8").splitlines() if "=" in l and not l.lstrip().startswith("#"))
+    pairs = (line.split("=", 1) for line in p.read_text(encoding="utf-8").splitlines()
+             if "=" in line and not line.lstrip().startswith("#"))
     return {k.strip(): _clean(v) for k, v in pairs}
 
 
@@ -195,8 +196,7 @@ def profit(log: pd.DataFrame, trades: pd.DataFrame, fee: float) -> dict:
     """Net profit (ledger minus money put in) and what fees and slippage cost, cumulative per day."""
     if log.empty:
         return {"net": 0.0, "fees": 0.0, "slippage": 0.0, "series": []}
-    eq = log.pivot_table(index="date", columns="strategy", values="equity").ffill().sum(axis=1)
-    funded = log.pivot_table(index="date", columns="strategy", values="funded").ffill().sum(axis=1)
+    eq, funded = totals(log)
     fees = slip = pd.Series(0.0, index=eq.index)
     if not trades.empty:
         t = trades.copy()
@@ -220,9 +220,7 @@ def status() -> dict:
     running = live.running_mode()
     mode = running or cfg.mode  # what is trading now, not what was saved for the next start
     sleeves, positions = [], []
-    for p in sorted(Path("state").glob(f"{mode}_*.json")):  # includes a removed strategy still holding coins
-        s = p.stem.removeprefix(f"{mode}_")
-        st = json.loads(p.read_text(encoding="utf-8"))
+    for s, st in live.ledgers(mode).items():  # includes a removed strategy still holding coins
         if s in STRATEGIES and (s in cfg.strategies or st["positions"]):
             sleeves.append({"strategy": s, "cash": st["cash"], "funded": st["funded"], "positions": st["positions"],
                             "halted": bool((st.get("guard") or {}).get("halted"))})
@@ -242,8 +240,6 @@ def status() -> dict:
             positions.append({"strategy": s["strategy"], "market": m, "value": pos["qty"] * px, "entry": pos["entry"],
                               "price": px, "pnl": px / pos["entry"] - 1, "stop": pos.get("stop")})
     log = _csv(f"logs/{mode}_equity.csv")
-    curve = (log.pivot_table(index="date", columns="strategy", values="equity").ffill().sum(axis=1)
-             if not log.empty else pd.Series(dtype=float))
     all_trades = _csv(f"logs/{mode}_trades.csv")
     trades = all_trades.tail(15).iloc[::-1].fillna("").to_dict("records")
     tail = Path("logs/bot.log").read_text(encoding="utf-8", errors="replace").splitlines()[-60:] if Path("logs/bot.log").exists() else []
@@ -260,7 +256,6 @@ def status() -> dict:
         "keys_set": bool(e.get("UPBIT_ACCESS_KEY") and e.get("UPBIT_SECRET_KEY")),
         "telegram_set": bool(e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID")),
         "equity": equity, "funded": funded, "positions": positions, "trades": trades, "log": tail,
-        "curve": [[d, round(v)] for d, v in curve.items()],
         "profit": profit(log, all_trades, cfg.costs.fee),
         "report": report(mode, f"logs/{mode}_equity.csv"),
         "sleeves": {k: {"params": v["params"], "tradable": v["tradable"]} for k, v in sel.get("sleeves", {}).items()},
@@ -275,12 +270,7 @@ def check(telegram: bool = False) -> dict:
     from .upbit import UpbitClient
 
     e = env()
-    ok, problems = diagnose(config.load(), UpbitClient(e.get("UPBIT_ACCESS_KEY"), e.get("UPBIT_SECRET_KEY")), e)
-    if telegram and e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID"):
-        _use_saved_keys()
-        if not live.send_telegram("tradebot 연결 점검: 이 메시지가 보이면 알림 설정 완료입니다."):
-            ok = [line for line in ok if not line.startswith("텔레그램")]
-            problems.append("텔레그램 전송 실패: 토큰과 chat id 를 확인하고, 텔레그램에서 내 봇에게 /start 를 먼저 보내세요.")
+    ok, problems = diagnose(config.load(), UpbitClient(e.get("UPBIT_ACCESS_KEY"), e.get("UPBIT_SECRET_KEY")), e, telegram)
     return {"ok": ok, "problems": problems}
 
 

@@ -27,7 +27,7 @@ class Config:
     risk: Risk = field(default_factory=Risk)
     costs: Costs = field(default_factory=Costs)
     paper_krw: float = 1_000_000
-    budget_krw: float = 0  # live: most KRW the bot may use (0 = whole account)
+    budget_krw: float = 0  # live: the KRW the bot may use (required; the rest of the account is never touched)
     poll_seconds: int = 10
     history_days: int = 1825
     train_days: int = 180

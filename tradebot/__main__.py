@@ -22,21 +22,18 @@ from . import backtest, config, data
 from .optimize import best_params, walk_forward
 from .strategies import STRATEGIES, prepare
 
-TARGET = 0.03
-
-
 def _frames(cfg: config.Config, offline: bool = True) -> dict[str, pd.DataFrame]:
     return {m: data.load(m, cfg.timeframe, cfg.history_days, offline=offline) for m in cfg.markets}
 
 
 def _row(name: str, m: dict) -> str:
     return (f"| {name} | {m['total_return']:+.1%} | {m['cagr']:+.1%} | {m['avg_daily']:+.3%} | "
-            f"{m['median_daily']:+.3%} | {m['sharpe']:.2f} | {m['max_drawdown']:.1%} | {m['days_ge_3pct']:.1%} | "
+            f"{m['median_daily']:+.3%} | {m['sharpe']:.2f} | {m['max_drawdown']:.1%} | "
             f"{m.get('trades', 0)} | {m.get('win_rate', 0):.0%} |")
 
 
-HEADER = ("| strategy | total | CAGR | avg/day | median/day | Sharpe | MDD | days ≥ +3% | trades | win |\n"
-          "|---|---|---|---|---|---|---|---|---|---|")
+HEADER = ("| strategy | total | CAGR | avg/day | median/day | Sharpe | MDD | trades | win |\n"
+          "|---|---|---|---|---|---|---|---|---|")
 
 
 def cmd_fetch(cfg, args):
@@ -106,14 +103,14 @@ def cmd_optimize(cfg, args):
     Path(config.SELECTED).with_name("walkforward.md").write_text(
         f"# Walk-forward out-of-sample results\n\nGenerated {summary['generated_at']}, markets {cfg.markets}, "
         f"timeframe {cfg.timeframe}m, fee {cfg.costs.fee:.2%} + slippage {cfg.costs.slippage:.2%} per side, "
-        f"daily target {cfg.risk.daily_target}, daily loss limit {cfg.risk.daily_loss_limit}.\n\n{table}\n",
+        f"daily loss limit {cfg.risk.daily_loss_limit}.\n\n{table}\n",
         encoding="utf-8")
     logging.info("self-review (chosen on data before %s, confirmed after): %s", rev["holdout_from"],
                  f"recommend strategies = {rev['recommend']}" if rev["recommend"] else "keep the current strategies")
     for s, v in sleeves.items():
         state = "trading" if v["tradable"] else "NOT trading new entries (stopped working recently)"
         print(f"sleeve {s}: {v['params']} -> {state}")
-    print(f"portfolio out-of-sample average day: {m['avg_daily']:+.3%} (target {TARGET:+.1%}) -> {config.SELECTED}")
+    print(f"portfolio out-of-sample: CAGR {m['cagr']:+.1%}, MDD {m['max_drawdown']:.1%} -> {config.SELECTED}")
 
 
 UPBIT_ERRORS = {  # error name in Upbit's response -> what to do
@@ -137,13 +134,16 @@ def _advice(e: Exception, keys=()) -> str:
 
 def _ledger_cash(budget: float) -> tuple[float, bool]:
     """KRW the live ledgers will hold after this start's funding, and whether any ledger exists yet."""
-    ledgers = [json.loads(p.read_text(encoding="utf-8")) for p in Path("state").glob("live_*.json")]
-    return budget - sum(s["funded"] for s in ledgers) + sum(s["cash"] for s in ledgers), bool(ledgers)
+    from .live import ledgers
+
+    books = ledgers("live").values()
+    return budget - sum(s["funded"] for s in books) + sum(s["cash"] for s in books), bool(books)
 
 
-def diagnose(cfg, client, env) -> tuple[list[str], list[str]]:
-    """Everything `run` needs, checked up front. Returns (ok lines, problems). Never prints secrets."""
-    from .live import MIN_ORDER_KRW
+def diagnose(cfg, client, env, telegram: bool = False) -> tuple[list[str], list[str]]:
+    """Everything `run` needs, checked up front. Returns (ok lines, problems). Never prints secrets.
+    telegram=True also sends a test message (the check commands do; starting the bot does not)."""
+    from .live import MIN_ORDER_KRW, send_telegram
 
     ok, problems = [], []
     live = cfg.mode == "live"
@@ -195,7 +195,10 @@ def diagnose(cfg, client, env) -> tuple[list[str], list[str]]:
         except Exception as e:
             problems.append(f"업비트 API 키 확인 실패: {_advice(e, keys)}")
     if env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID"):
-        ok.append("텔레그램 알림: 켜짐")
+        if telegram and not send_telegram("tradebot 연결 점검: 이 메시지가 보이면 알림 설정 완료입니다.", env):
+            problems.append("텔레그램 전송 실패: 토큰과 chat id 를 확인하고, 텔레그램에서 내 봇에게 /start 를 먼저 보내세요.")
+        else:
+            ok.append("텔레그램 알림: 켜짐" + (" (테스트 메시지 보냄)" if telegram else ""))
     else:
         ok.append("텔레그램 알림: 꺼짐 (선택, 제어판의 텔레그램 칸)")
     ok.append(f"Claude 주간 검토: 켜짐 (자동 실행 {'켜짐' if cfg.claude_autopilot else '꺼짐'})"
@@ -204,14 +207,10 @@ def diagnose(cfg, client, env) -> tuple[list[str], list[str]]:
 
 
 def cmd_check(cfg, args):
-    from .live import send_telegram
     from .upbit import UpbitClient
 
     client = UpbitClient(os.environ.get("UPBIT_ACCESS_KEY"), os.environ.get("UPBIT_SECRET_KEY"))
-    ok, problems = diagnose(cfg, client, os.environ)
-    telegram = os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")
-    if telegram and not send_telegram("tradebot 점검 통과. 이 메시지가 보이면 알림 설정 완료입니다."):
-        problems.append("텔레그램 전송 실패: 토큰과 chat id 를 확인하고, 텔레그램에서 내 봇에게 /start 를 먼저 보내세요.")
+    ok, problems = diagnose(cfg, client, os.environ, telegram=True)
     for line in ok:
         print("  OK  ", line)
     for line in problems:
@@ -246,17 +245,16 @@ def cmd_review(cfg, args):
 
 def cmd_resume(cfg, args):
     """Clear the -35% kill switch, after you have looked into why it fired."""
-    from .live import running_pid
+    from .live import ledgers, running_pid
 
     if running_pid():
         raise SystemExit("봇을 먼저 정지하세요 (제어판의 정지 버튼).")
     cleared = 0
-    for p in Path("state").glob(f"{cfg.mode}_*.json"):
-        st = json.loads(p.read_text(encoding="utf-8"))
+    for name, st in ledgers(cfg.mode).items():
         if (st.get("guard") or {}).get("halted"):
             st["guard"].update(halted=False, peak=0.0)  # the next step takes today's ledger as the new peak
-            p.write_text(json.dumps(st, indent=2), encoding="utf-8")
-            print(f"{p.stem}: 비상 정지를 풀었습니다. 다시 시작하면 지금 장부를 새 고점으로 삼아 매매합니다.")
+            Path(f"state/{cfg.mode}_{name}.json").write_text(json.dumps(st, indent=2), encoding="utf-8")
+            print(f"{name}: 비상 정지를 풀었습니다. 다시 시작하면 지금 장부를 새 고점으로 삼아 매매합니다.")
             cleared += 1
     print("풀 것이 없습니다." if not cleared else "제어판에서 다시 시작하세요.")
 
@@ -323,7 +321,7 @@ def cmd_run(cfg, args):
 def _bots(cfg, live, client, broker, budget):
     """One bot per strategy, each funded budget / number of strategies. A strategy removed from the config
     while it still holds coins keeps a bot that only manages them (stops and exits, no new buys)."""
-    from .live import Bot, BotConfig
+    from .live import Bot, BotConfig, ledgers
 
     def bot(name, params, tradable, funding):
         return Bot(BotConfig(markets=cfg.markets, strategy=name, params=params, risk=cfg.risk, costs=cfg.costs,
@@ -333,13 +331,10 @@ def _bots(cfg, live, client, broker, budget):
 
     sleeves = cfg.sleeves()
     bots = [bot(n, p, t, budget / len(cfg.strategies)) for n, p, t in sleeves]
-    for p in Path("state").glob(f"{cfg.mode}_*.json"):
-        name = p.stem.removeprefix(f"{cfg.mode}_")
-        if name in STRATEGIES and name not in {n for n, _, _ in sleeves}:
-            st = json.loads(p.read_text(encoding="utf-8"))
-            if st["positions"]:
-                logging.warning("%s: 설정에서 빠졌지만 보유 중인 코인이 있어 손절/청산만 계속합니다", name)
-                bots.append(bot(name, {}, False, st["funded"]))
+    for name, st in ledgers(cfg.mode).items():
+        if name in STRATEGIES and name not in {n for n, _, _ in sleeves} and st["positions"]:
+            logging.warning("%s: 설정에서 빠졌지만 보유 중인 코인이 있어 손절/청산만 계속합니다", name)
+            bots.append(bot(name, {}, False, st["funded"]))
     return sleeves, bots
 
 

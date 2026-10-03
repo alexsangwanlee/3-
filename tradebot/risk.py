@@ -7,9 +7,8 @@ import numpy as np
 
 @dataclass
 class Risk:
-    # Defaults come from results/guard_ablation.md: a +3% profit lock cut out-of-sample
-    # returns for every strategy (it sells the big trend days), so it is off by default.
-    daily_target: float | None = None      # e.g. 0.03: +3% on the day -> flatten and stop until tomorrow
+    # research only (results/guard_ablation.md): a daily profit lock sells the big trend days and cut returns
+    daily_target: float | None = None
     daily_loss_limit: float | None = 0.05  # -5% on the day -> flatten and stop until tomorrow
     max_drawdown: float | None = 0.35      # -35% from the equity peak -> flatten and halt for good
     risk_per_trade: float = 0.01           # max equity lost if a stop-loss is hit

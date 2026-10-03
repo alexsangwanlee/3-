@@ -114,12 +114,7 @@ def facts(cfg: config.Config) -> dict:
 
 
 def _halted(mode: str) -> list[str]:
-    out = []
-    for p in Path("state").glob(f"{mode}_*.json"):
-        st = json.loads(p.read_text(encoding="utf-8"))
-        if (st.get("guard") or {}).get("halted"):
-            out.append(p.stem.removeprefix(f"{mode}_"))
-    return out
+    return [name for name, st in live.ledgers(mode).items() if (st.get("guard") or {}).get("halted")]
 
 
 def _system() -> list[dict]:

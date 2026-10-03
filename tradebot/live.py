@@ -31,6 +31,12 @@ def stop_requested() -> bool:
     return STOP.is_set() or STOP_FILE.exists()
 
 
+def ledgers(mode: str) -> dict[str, dict]:
+    """Every strategy ledger saved for `mode` (state/<mode>_<strategy>.json), including removed strategies."""
+    return {p.stem.removeprefix(f"{mode}_"): json.loads(p.read_text(encoding="utf-8"))
+            for p in sorted(Path("state").glob(f"{mode}_*.json"))}
+
+
 def entries_paused() -> bool:
     return PAUSE_FILE.exists()
 
@@ -78,9 +84,10 @@ def running_mode() -> str | None:
     return PID_FILE.read_text().split()[1] if running_pid() else None
 
 
-def send_telegram(text: str) -> bool:
+def send_telegram(text: str, env=None) -> bool:
     """Telegram message when TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set. Never raises. True if delivered."""
-    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    env = os.environ if env is None else env
+    token, chat = env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID")
     if not (token and chat):
         return False
     try:
@@ -230,9 +237,6 @@ class Bot:
         tmp.write_text(json.dumps(self.state, indent=2, default=str), encoding="utf-8")
         os.replace(tmp, p)
 
-    def _log_trade(self, **row) -> None:
-        self._append(self.cfg.trades_path, **row)
-
     @staticmethod
     def _append(path: str, **row) -> None:
         """Add a CSV row. A log file open in Excel (locked on Windows) never stops trading."""
@@ -349,7 +353,7 @@ class Bot:
             self.save()
             log.info("BUY  %s qty=%.8f @ %.4f (%s) stop=%s", m, vol, fill, order["reason"], stop)
             notify(f"[tradebot] 매수 {m} {vol * fill:,.0f}원 @ {fill:,.0f}" + (f", 손절가 {stop:,.0f}" if stop else ""))
-            self._log_trade(time=t, strategy=self.cfg.strategy, market=m, side="buy", qty=vol, price=fill,
+            self._append(self.cfg.trades_path, time=t, strategy=self.cfg.strategy, market=m, side="buy", qty=vol, price=fill,
                             reason=order["reason"], pnl="", slip=round(fill / order["price"] - 1, 6),
                             **self._costs(vol, fill, fill - order["price"]))
             return
@@ -363,7 +367,7 @@ class Bot:
         pnl = fill * (1 - fee) / (order["entry"] * (1 + fee)) - 1
         log.info("SELL %s qty=%.8f @ %.4f (%s) pnl=%.2f%%", m, vol, fill, order["reason"], pnl * 100)
         notify(f"[tradebot] 매도 {m} @ {fill:,.0f} ({order['reason']}) 손익 {pnl:+.2%}")
-        self._log_trade(time=t, strategy=self.cfg.strategy, market=m, side="sell", qty=vol, price=fill,
+        self._append(self.cfg.trades_path, time=t, strategy=self.cfg.strategy, market=m, side="sell", qty=vol, price=fill,
                         reason=order["reason"], pnl=round(pnl, 6),
                         slip=round(1 - fill / order["price"], 6),  # vs the price the decision saw: learned by optimize
                         **self._costs(vol, fill, order["price"] - fill))

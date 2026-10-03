@@ -13,7 +13,8 @@ PAPER_DAYS = 28  # Phase 0: paper trading before any real money
 GROW_DAYS = 90   # live: earliest budget increase after the last change, and at most 2x
 
 
-def _sums(log: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+def totals(log: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Daily ledger equity and money put in, summed over strategies."""
     def total(col):
         return log.pivot_table(index="date", columns="strategy", values=col).ffill().sum(axis=1)
     return total("equity"), total("funded")
@@ -21,7 +22,7 @@ def _sums(log: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
 
 def flow_adjusted_returns(log: pd.DataFrame) -> pd.Series:
     """Daily portfolio returns with budget changes (deposits / withdrawals) taken out."""
-    eq, funded = _sums(log)
+    eq, funded = totals(log)
     r = ((eq.diff() - funded.diff()) / eq.shift(1)).dropna()
     r.index = pd.to_datetime(r.index)
     return r
@@ -52,7 +53,7 @@ def plan_status(log: pd.DataFrame, bands: dict, mode: str) -> list[str]:
                      "Phase 1 진행 가능: 설정에서 실거래로 바꾸고, 실거래 금액을 목표 금액의 10~20%로"
                      if not warn else "모의매매 계속: 점검 항목을 먼저 해결하세요")
     else:
-        _, funded = _sums(log)
+        _, funded = totals(log)
         changed = funded.diff().fillna(0) != 0
         since = days - (int(changed.to_numpy().nonzero()[0][-1]) if changed.any() else 0)
         lines.append("증액 가능: 지난 90일이 정상 범위 → 실거래 금액을 최대 2배까지 (목표 금액 이내)"
