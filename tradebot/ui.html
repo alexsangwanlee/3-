@@ -407,7 +407,8 @@ function renderClaude() {
   if (S.paused) $("#paused-text").textContent = `신규 매수를 멈췄습니다. 보유 코인의 손절·청산은 계속합니다. 이유: ${S.paused.reason}`;
   $("#claude").hidden = !S.claude_set && !S.claude;
   const c = S.claude;
-  $("#claude-when").textContent = c ? `${new Date(c.at).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" })}에 받은 검토 (${c.model})`
+  const tokens = c && c.usage && c.usage.input_tokens ? `, 토큰 입력 ${c.usage.input_tokens.toLocaleString("ko-KR")} / 출력 ${(c.usage.output_tokens || 0).toLocaleString("ko-KR")}` : "";
+  $("#claude-when").textContent = c ? `${new Date(c.at).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" })}에 받은 검토 (${c.model}${tokens})`
     : "아직 검토가 없습니다. 매주 재검증 뒤 자동으로 받거나, 아래 버튼으로 지금 받을 수 있습니다.";
   $("#claude-summary").textContent = c ? c.review.summary : "";
   const ul = $("#claude-points");
@@ -426,7 +427,10 @@ $("#claude-run").addEventListener("click", async () => {
   const btn = $("#claude-run");
   btn.disabled = true;
   say("#claude-msg", "Claude가 검토하는 중… (보통 1분 이내)");
-  try { await api("/api/claude/review", {}); say("#claude-msg", "검토를 받았습니다."); }
+  try {
+    const r = await api("/api/claude/review", {});
+    say("#claude-msg", r.skipped ? "지난 검토 뒤로 바뀐 내용이 없어 그 검토를 그대로 보여줍니다 (토큰을 쓰지 않았습니다)." : "검토를 받았습니다.");
+  }
   catch (e) { say("#claude-msg", e.message); }
   await refresh();
 });

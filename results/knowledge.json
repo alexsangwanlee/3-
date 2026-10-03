@@ -1,0 +1,31 @@
+{
+  "about": "Every trading idea tested on this bot and the verdict. Out-of-sample walk-forward (train 180d / test 60d) on Upbit 4h data 2021-10..2026-10, fees 0.05% + slippage 0.05% per side, unless noted. Read this before proposing or testing an idea; re-test only if the data or the bot changed materially.",
+  "in_production": [
+    "4h bars (1h: Sharpe 0.82-1.08 -> 4h: 1.37-1.38, MDD -27% -> -15%)",
+    "donchian + ema_cross, equal sub-accounts (steadier: positive quarters 42% -> 63%)",
+    "inverse-volatility weights across coins (MDD -6 to -8 pts)",
+    "fixed ATR stop + giveback guard: after +30% sell 15% below the high (Sharpe 1.15 -> 1.35; mostly 2024-12-03)",
+    "daily loss limit -5% and kill switch -35% per sleeve",
+    "weekly walk-forward re-selection of parameters; a sleeve stops new entries when it stopped working",
+    "real slippage learned from live fills feeds the weekly re-selection",
+    "self-review: add/drop one strategy only if better on old data AND not worse on the last 180 days; user approves"
+  ],
+  "rejected": [
+    {"idea": "+3% daily profit lock (original goal)", "result": "cut returns for every strategy (donchian +103% -> +26%)", "file": "results/guard_ablation.md"},
+    {"idea": "vbo (volatility breakout), rsi_mr (RSI-2 mean reversion)", "result": "negative out of sample (-22%, -5%)", "file": "README.md"},
+    {"idea": "trailing / chandelier stop", "result": "cuts the big trends (Sharpe 0.14, -0.63)", "file": "results/optimization.md"},
+    {"idea": "break-even stop, 12% hard stop cap, wider stop grid", "result": "no gain or fails one half", "file": "results/optimization.md"},
+    {"idea": "BTC > SMA200/SMA50 regime filter", "result": "misses trend starts (Sharpe 0.75, 0.50)", "file": "results/optimization.md"},
+    {"idea": "volatility cap 2.5%/day; all 4 strategies equal split", "result": "worse", "file": "results/optimization.md"},
+    {"idea": "copying Wonyotti's BitMEX positions / imitation ML", "result": "worse than holding BTC; AUC 0.40", "file": "results/wonyotti.md"},
+    {"idea": "meta-labeling: logistic filter on past trades (8 features)", "result": "Sharpe 1.33 -> 1.27, AUC 0.545; skipped a +90% trade", "file": "results/metalabel.md"},
+    {"idea": "Fear & Greed >= 80 gate", "result": "Sharpe 1.44 -> 1.39", "file": "results/data_study.md"},
+    {"idea": "BTC funding > 0.03%/8h gate", "result": "Sharpe 1.44 -> 1.47, below the +0.10 bar", "file": "results/data_study.md"},
+    {"idea": "kimchi premium > 5% gate", "result": "Sharpe 1.80 but 1st half worse; gain came from one quarter via parameter path, not the gate. Watch, do not use", "file": "results/data_study.md"}
+  ],
+  "pending": [
+    "wider universe (top 10/20 by turnover), LightGBM filter on ~24 features, Kronos-small forecast filter: results/data_study.md",
+    "cost-to-risk filter, 3-of-4 confirmed entries, CAGR parameter choice, 2% risk sizing, 2h-shifted clock: results/edge_study.md"
+  ],
+  "costs": "fees + slippage take ~14% of gross profit (+196.7% before costs -> +168.4% after, 2022-04..2026-03); about half each"
+}

@@ -6,6 +6,7 @@ tools: Read, Grep, Glob, Bash, Write, Edit, WebFetch, WebSearch
 You test trading ideas for this bot. Most ideas fail, and that is a fine result. A wrong "yes" costs real money; a "no" costs nothing.
 
 Rules:
+0. **Read `results/knowledge.json` first.** Do not spend time or tokens re-testing an idea it lists, unless the data or the bot changed materially. When you finish, add your verdict to it in the same compact form.
 1. **Write the hypothesis and the adoption rule before running anything.** Put them in `results/<study>.md` and commit that first.
    - The default rule, judged on the development period (walk-forward test windows before the lockbox):
      - portfolio Sharpe ≥ baseline + 0.10;

@@ -8,6 +8,7 @@ little market context. It explains them in Korean and picks one action. It never
     apply_recommendation  use the strategies the weekly self-review already validated }
     resume_entries        allow new buys again: riskier, so it always waits for the user
 """
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ log = logging.getLogger("tradebot")
 API = "https://api.anthropic.com/v1/messages"
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
 REVIEW = Path("state/claude_review.json")
+KNOWLEDGE = Path("results/knowledge.json")  # every idea already tested, so Claude never spends tokens rediscovering it
 ACTIONS = {"keep": "그대로 유지", "pause_entries": "신규 매수 멈춤", "apply_recommendation": "검증된 전략 추천 적용",
            "resume_entries": "신규 매수 다시 허용"}
 AUTO = {"pause_entries", "apply_recommendation"}  # what autopilot may do without asking: never adds risk
@@ -108,8 +110,6 @@ def facts(cfg: config.Config) -> dict:
         "entries_paused": live.pause_info(), "kill_switch": _halted(cfg.mode),
         "log_problems": {"count": len(problems), "last": problems[-8:]},
         "market": market_context(),
-        "evidence": "Gates on Fear & Greed, funding, kimchi premium and ML/foundation-model entry filters were tested "
-                    "out of sample and not adopted (results/data_study.md). Do not recommend them.",
     }
 
 
@@ -122,20 +122,32 @@ def _halted(mode: str) -> list[str]:
     return out
 
 
-def ask(payload: dict, key: str) -> dict:
+def _system() -> list[dict]:
+    """The fixed part of the prompt. The knowledge digest sits last with a cache mark, so repeated calls within the
+    cache window are billed at the cached rate, and Claude is told what is settled instead of re-deriving it."""
+    known = KNOWLEDGE.read_text(encoding="utf-8") if KNOWLEDGE.exists() else "{}"
+    return [{"type": "text", "text": SYSTEM},
+            {"type": "text", "text": "Already tested on this bot (do not re-propose rejected ideas):\n" + known,
+             "cache_control": {"type": "ephemeral"}}]
+
+
+def ask(payload: dict, key: str) -> tuple[dict, dict]:
     r = requests.post(API, headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                      json={"model": MODEL, "max_tokens": 2000, "system": SYSTEM, "tools": [TOOL],
+                      json={"model": MODEL, "max_tokens": 2000, "system": _system(), "tools": [TOOL],
                             "tool_choice": {"type": "tool", "name": TOOL["name"]},
                             "messages": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}]},
                       timeout=120)
     r.raise_for_status()
-    got = next(b["input"] for b in r.json()["content"] if b.get("type") == "tool_use")
+    body = r.json()
+    got = next(b["input"] for b in body["content"] if b.get("type") == "tool_use")
     # model output is untrusted input: keep only known fields, known actions, bounded text
     text = lambda v, n=600: str(v)[:n]  # noqa: E731
     items = lambda v: [text(x, 300) for x in (v if isinstance(v, list) else [])][:6]  # noqa: E731
-    return {"summary": text(got.get("summary", "")), "risks": items(got.get("risks")),
-            "action": got.get("action") if got.get("action") in ACTIONS else "keep",
-            "reason": text(got.get("reason", ""), 400), "user_checks": items(got.get("user_checks"))}
+    review = {"summary": text(got.get("summary", "")), "risks": items(got.get("risks")),
+              "action": got.get("action") if got.get("action") in ACTIONS else "keep",
+              "reason": text(got.get("reason", ""), 400), "user_checks": items(got.get("user_checks"))}
+    usage = {k: int(v) for k, v in (body.get("usage") or {}).items() if isinstance(v, int)}
+    return review, usage
 
 
 def _possible(action: str) -> bool:
@@ -162,8 +174,15 @@ def run(cfg: config.Config) -> dict | None:
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         return None
+    payload = facts(cfg)
+    digest = hashlib.sha256(json.dumps({k: v for k, v in payload.items() if k != "market"}, sort_keys=True,
+                                       ensure_ascii=False, default=str).encode()).hexdigest()
+    last = json.loads(REVIEW.read_text(encoding="utf-8")) if REVIEW.exists() else {}
+    if last.get("digest") == digest:  # nothing the bot knows has changed: no call, no tokens
+        log.info("Claude review skipped: nothing changed since %s", last.get("at"))
+        return {**last, "skipped": True}
     try:
-        rv = ask(facts(cfg), key)
+        rv, usage = ask(payload, key)
     except Exception as e:  # never let the review break trading
         log.warning("Claude review failed: %s", type(e).__name__)
         return None
@@ -175,7 +194,8 @@ def run(cfg: config.Config) -> dict | None:
         if cfg.claude_autopilot and rv["action"] in AUTO:
             apply(rv["action"], rv["reason"])
             status = "applied"
-    out = {"at": pd.Timestamp.now(tz="UTC").isoformat(), "model": MODEL, "review": rv, "status": status}
+    out = {"at": pd.Timestamp.now(tz="UTC").isoformat(), "model": MODEL, "review": rv, "status": status,
+           "usage": usage, "digest": digest}
     REVIEW.parent.mkdir(exist_ok=True)
     REVIEW.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     label = ACTIONS[rv["action"]] + {"applied": " (자동 실행함)", "waiting": " (제어판에서 승인하면 실행)", "none": ""}[status]

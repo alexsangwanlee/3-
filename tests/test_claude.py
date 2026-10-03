@@ -17,7 +17,8 @@ class Reply:
 
     def json(self):
         return {"content": [{"type": "text", "text": "ok"},
-                            {"type": "tool_use", "name": "weekly_review", "input": self.review}]}
+                            {"type": "tool_use", "name": "weekly_review", "input": self.review}],
+                "usage": {"input_tokens": 3100, "output_tokens": 420, "cache_read_input_tokens": 0}}
 
 
 def review(action, **kw):
@@ -101,3 +102,22 @@ def test_an_api_failure_never_breaks_the_bot(home, monkeypatch):
     answer(monkeypatch, Reply({}, status=529))
     assert claude.run(config.Config(claude_autopilot=True)) is None
     assert not live.entries_paused()
+
+
+def test_nothing_changed_means_no_new_call_and_no_tokens(home, monkeypatch):
+    sent = []
+    answer(monkeypatch, review("keep"), sent)
+    first = claude.run(config.Config())
+    again = claude.run(config.Config())
+    assert len(sent) == 1 and again["skipped"] and again["review"] == first["review"]
+    assert first["usage"]["input_tokens"] == 3100
+
+
+def test_what_was_already_learned_is_sent_as_a_cacheable_digest_not_rediscovered(home, monkeypatch):
+    sent = []
+    (home / "results").mkdir()
+    (home / "results" / "knowledge.json").write_text(json.dumps({"rejected": [{"idea": "trailing stop"}]}))
+    answer(monkeypatch, review("keep"), sent)
+    claude.run(config.Config())
+    system = sent[0][1]["system"]
+    assert "trailing stop" in system[-1]["text"] and system[-1]["cache_control"] == {"type": "ephemeral"}
