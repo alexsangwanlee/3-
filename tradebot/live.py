@@ -312,17 +312,28 @@ class Bot:
         return prepared.iloc[-1]
 
     def _ai_rows(self, bar, prices: dict) -> dict:
-        """The ai sleeve's rows: the AIs decide once per bar; if they cannot, no new buys (stops still run)."""
-        if getattr(self, "_ai", (None,))[0] != bar:
+        """The ai sleeve's rows. The AIs decide once per bar in a background thread, on a snapshot, so a slow or
+        unreachable AI never delays any stop-loss; until they answer (or if they cannot), no new buys."""
+        job = getattr(self, "_ai", None)
+        if job is None or job["bar"] != bar:
+            from types import SimpleNamespace
+
             from .ai_trader import rows
 
-            try:
-                got = rows(self, bar, prices)
-            except Exception as e:
-                log.warning("ai: no decision this bar (%s)", type(e).__name__)
-                got = {}
-            self._ai = (bar, got)
-        return {m: r for m, r in self._ai[1].items() if m in prices}
+            snap = SimpleNamespace(cfg=self.cfg, candles=dict(self.candles),
+                                   state={"positions": json.loads(json.dumps(self.state["positions"]))})
+            job = {"bar": bar, "rows": {}}
+
+            def decide():
+                try:
+                    job["rows"] = rows(snap, bar, dict(prices))
+                except Exception as e:
+                    log.warning("ai: no decision this bar (%s)", type(e).__name__)
+
+            job["thread"] = threading.Thread(target=decide, daemon=True)
+            job["thread"].start()
+            self._ai = job
+        return {m: r for m, r in job["rows"].items() if m in prices}
 
     # -- trading ---------------------------------------------------------
     def _order(self, side: str, market: str, amount: float, price: float, **meta) -> None:
