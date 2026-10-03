@@ -7,3 +7,4 @@ logs/
 .env
 config.toml
 .venv/
+.claude/worktrees/
