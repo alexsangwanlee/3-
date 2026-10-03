@@ -221,6 +221,15 @@ def profit(log: pd.DataFrame, trades: pd.DataFrame, fee: float) -> dict:
             "series": [[d, round(n, 2), round(f + s_, 2)] for d, n, f, s_ in zip(eq.index, net, fees, slip)]}  # JS rounds
 
 
+def _ai_status() -> dict:
+    """The ai sleeve's rulebook and last decisions. A damaged file must never take the whole panel down."""
+    try:
+        return {"rules": ai_trader.rulebook(), "journal": ai_trader._read(ai_trader.JOURNAL, [])[-5:][::-1],
+                "paper_days": ai_trader.paper_days()}
+    except (OSError, ValueError):
+        return {"rules": [], "journal": [], "paper_days": 0}
+
+
 def status() -> dict:
     CHILDREN[:] = [c for c in CHILDREN if c.poll() is None]
     cfg = config.load()
@@ -263,8 +272,7 @@ def status() -> dict:
         "claude_key_set": bool(e.get("ANTHROPIC_API_KEY")), "gpt_key_set": bool(e.get("OPENAI_API_KEY")),
         "max_drawdown": cfg.risk.max_drawdown,
         "claude": json.loads(claude.REVIEW.read_text(encoding="utf-8")) if claude.REVIEW.exists() else None,
-        "ai": {"rules": ai_trader.rulebook(), "journal": ai_trader._read(ai_trader.JOURNAL, [])[-5:][::-1],
-               "paper_days": ai_trader.paper_days()} if "ai" in cfg.strategies else None,
+        "ai": _ai_status() if "ai" in cfg.strategies else None,
         "keys_set": bool(e.get("UPBIT_ACCESS_KEY") and e.get("UPBIT_SECRET_KEY")),
         "telegram_set": bool(e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID")),
         "equity": equity, "funded": funded, "positions": positions, "trades": trades, "log": tail,

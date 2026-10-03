@@ -447,7 +447,7 @@ function renderAiTrade() {
   $("#ai-trade").hidden = !A;
   if (!A) return;
   $("#ai-gate").textContent = `한 AI가 제안하면 다른 AI가 검토합니다. 매수는 둘 다 동의해야, 매도는 한쪽만 원해도 합니다. `
-    + `수량·손절가·손실 한도는 봇이 정합니다. 모의매매 기록 ${A.paper_days}/28일${A.paper_days >= 28 ? " (실거래 가능)" : ""}.`;
+    + `수량·손절가·손실 한도는 봇이 정합니다. 모의매매에서 AI가 판단한 날 ${A.paper_days}/28일${A.paper_days >= 28 ? " (실거래 가능)" : ""}.`;
   const j = $("#ai-journal");
   j.replaceChildren();
   if (!A.journal.length) item(j, "–", "muted", "아직 판단이 없습니다. 규칙 전략에 신호가 나거나, 보유 중이면 하루 한 번 판단합니다.");

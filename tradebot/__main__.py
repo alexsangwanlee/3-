@@ -173,8 +173,8 @@ def diagnose(cfg, client, env, telegram: bool = False) -> tuple[list[str], list[
         if not [x for x in cfg.strategies if x != "ai"]:
             problems.append("ai 전략은 규칙 전략(donchian, ema_cross 등) 하나 이상과 함께 고르세요. AI는 규칙 전략의 신호가 날 때 판단합니다.")
         if live and paper_days() < PAPER_DAYS:
-            problems.append(f"ai 전략의 실거래는 모의매매 기록이 {PAPER_DAYS}일 이상 있어야 합니다 (지금 {paper_days()}일). "
-                            "모의매매로 먼저 돌리거나 전략에서 ai 를 빼세요.")
+            problems.append(f"ai 전략의 실거래는 모의매매에서 AI가 실제로 판단한 날이 {PAPER_DAYS}일 이상 있어야 합니다 "
+                            f"(지금 {paper_days()}일). 모의매매로 먼저 돌리거나 전략에서 ai 를 빼세요.")
     if live and cfg.budget_krw <= 0:
         problems.append("config.toml 의 budget_krw 를 정하세요 (봇이 쓸 원화, 예: 1000000). 계좌의 나머지 돈은 건드리지 않습니다.")
     try:
@@ -391,12 +391,20 @@ def _bots(cfg, live, client, broker, budget):
                              state_path=f"state/{cfg.mode}_{name}.json", trades_path=f"logs/{cfg.mode}_trades.csv",
                              equity_path=f"logs/{cfg.mode}_equity.csv"), client, broker=broker, funding=funding)
 
+    from .ai_trader import PAPER_DAYS, paper_days
+
     sleeves = cfg.sleeves()
-    bots = [bot(n, p, t, budget / len(cfg.strategies)) for n, p, t in sleeves]
-    for name, st in ledgers(cfg.mode).items():
-        if (name in STRATEGIES or name == "ai") and name not in {n for n, _, _ in sleeves} and st["positions"]:
-            logging.warning("%s: 설정에서 빠졌지만 보유 중인 코인이 있어 손절/청산만 계속합니다", name)
-            bots.append(bot(name, {}, False, st["funded"]))
+    if live and "ai" in {n for n, _, _ in sleeves} and paper_days() < PAPER_DAYS:  # also when added while running
+        logging.warning("ai: 모의 투자에서 AI 판단이 %d일 쌓여야 실제 돈으로 매매합니다 (지금 %d일). 이번에는 빼고 돌립니다",
+                        PAPER_DAYS, paper_days())
+        sleeves = [s for s in sleeves if s[0] != "ai"]
+    held = {name: st for name, st in ledgers(cfg.mode).items() if (name in STRATEGIES or name == "ai")
+            and name not in {n for n, _, _ in sleeves} and st["positions"]}
+    tied = sum(p["qty"] * p["entry"] for st in held.values() for p in st["positions"].values())
+    bots = [bot(n, p, t, max(budget - tied, 0) / len(cfg.strategies)) for n, p, t in sleeves]
+    for name, st in held.items():
+        logging.warning("%s: 설정에서 빠졌지만 보유 중인 코인이 있어 손절/청산만 계속합니다", name)
+        bots.append(bot(name, {}, False, st["funded"]))
     return sleeves, bots
 
 

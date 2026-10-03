@@ -1,11 +1,17 @@
 """The "ai" sleeve: Claude and GPT decide its trades and check each other, inside the bot's hard limits."""
 import json
 
+from types import SimpleNamespace
+
+import numpy as np
 import pandas as pd
 import pytest
 from test_live_exchange import Exchange, hold, make_bot, now
 
-from tradebot import ai_trader, claude, live
+from tradebot import ai_trader, claude, config, live
+
+FACTS = {"KRW-BTC": {"held": None, "confirmation_3_of_4": True},
+         "KRW-ETH": {"held": {"entry": 1.0}, "confirmation_3_of_4": True}}
 
 
 @pytest.fixture
@@ -26,15 +32,19 @@ def ai(tmp_path, monkeypatch):
         answer = state["script"][tool["name"]]
         if isinstance(answer, Exception):
             raise answer
+        if callable(answer):
+            answer = answer()
         return answer, {"input_tokens": 1000, "output_tokens": 100}
 
     monkeypatch.setattr(claude, "call", call)
     return state
 
 
-def ai_bot(tmp_path, ex):
-    bot = make_bot(tmp_path, ex)
+def ai_bot(tmp_path, ex, markets=("KRW-BTC",), paper=False):
+    bot = make_bot(tmp_path, ex, markets=markets)
     bot.cfg.strategy = "ai"
+    if paper:
+        bot.broker = live.PaperBroker(bot.state["paper_holdings"], bot.cfg.costs)
     return bot
 
 
@@ -46,7 +56,8 @@ def midnight(ex, days=1):
 def decide(bot, t):
     """Step, let the AIs' background decision finish, step again in the same bar (as the next poll would)."""
     bot.step(t)
-    bot._ai["thread"].join(5)
+    if bot._ai.get("thread"):
+        bot._ai["thread"].join(5)
     bot.step(t + pd.Timedelta(seconds=10))
 
 
@@ -145,7 +156,6 @@ def test_the_ais_never_see_a_secret(tmp_path, ai):
 
 
 def test_real_money_for_the_ai_needs_28_days_of_paper_results(tmp_path, monkeypatch):
-    from tradebot import config
     from tradebot.__main__ import diagnose
     from test_setup import LIVE_KEYS, FakeClient
     monkeypatch.chdir(tmp_path)
@@ -153,9 +163,7 @@ def test_real_money_for_the_ai_needs_28_days_of_paper_results(tmp_path, monkeypa
     cfg = config.Config(mode="live", budget_krw=1_000_000, strategies=["donchian", "ai"])
     _, problems = diagnose(cfg, FakeClient(), env)
     assert any("28" in p for p in problems)
-    (tmp_path / "logs").mkdir()
-    days = pd.date_range("2026-09-01", periods=28, freq="D").strftime("%Y-%m-%d")
-    pd.DataFrame({"date": days, "strategy": "ai", "equity": 1.0, "funded": 1.0}).to_csv(tmp_path / "logs" / "paper_equity.csv", index=False)
+    paper_decisions(28)
     _, problems = diagnose(cfg, FakeClient(), env)
     assert not any("28" in p for p in problems)
 
@@ -180,3 +188,144 @@ def test_a_slow_ai_never_delays_stop_losses(tmp_path, ai, monkeypatch):
     bot.step(now(ex))  # the stop fires now, while the AIs are still thinking
     assert time.time() - t0 < 2 and "KRW-ETH" not in bot.state["positions"]
     release.set()
+
+
+def paper_decisions(n):
+    ai_trader.DAYS.parent.mkdir(exist_ok=True)
+    ai_trader.DAYS.write_text(json.dumps([str(d.date()) for d in pd.date_range("2026-09-01", periods=n)]))
+
+
+def test_the_run_loop_keeps_the_ai_off_real_money_until_28_paper_days(tmp_path, ai):
+    """Also when "ai" is added (panel, autopilot) while the bot already runs live, past the start-up check."""
+    from test_setup import FakeClient
+
+    from tradebot.__main__ import _bots
+    (tmp_path / "state" / "selected.json").write_text(json.dumps(
+        {"generated_at": "2026-10-01T00:00:00+00:00", "sleeves": {"donchian": {"params": {}, "tradable": True}}}))
+    cfg = config.Config(mode="live", strategies=["donchian", "ai"])
+
+    def sleeves():
+        return [(b.cfg.strategy, b.state["funded"]) for b in _bots(cfg, True, FakeClient(), None, 1_000_000)[1]]
+
+    assert sleeves() == [("donchian", 500_000)]  # the ai's share stays unused
+    paper_decisions(28)
+    assert sleeves() == [("donchian", 500_000), ("ai", 500_000)]
+
+
+def test_only_days_the_ais_really_decided_on_paper_count_toward_real_money(tmp_path, ai):
+    ex = Exchange()
+    ai["script"] = {"propose_trades": propose(), "review_trades": review()}
+    decide(ai_bot(tmp_path, ex), now(ex))  # a real-money decision is not a paper result
+    assert ai_trader.paper_days() == 0
+    (tmp_path / "p").mkdir()
+    decide(ai_bot(tmp_path / "p", ex, paper=True), now(ex))
+    assert ai_trader.paper_days() == 1
+
+
+def test_a_trade_closed_while_the_ais_think_keeps_its_record(tmp_path, ai):
+    new_rule = {"op": "add", "rule_id": "", "text": "새 규칙", "why": "-"}
+
+    def review_while_a_trade_closes():
+        ai_trader.record("R1", 0.05)  # the main loop books a sale during the (slow) AI call
+        return review(accept=[0])
+
+    ai["script"] = {"propose_trades": propose(rules=[new_rule]), "review_trades": review_while_a_trade_closes}
+    ai_trader.debate(["claude", "gpt"], 0, "bar", FACTS)
+    rules = ai_trader.rulebook()
+    assert next(r for r in rules if r["id"] == "R1")["trades"] == 1 and any(r["text"] == "새 규칙" for r in rules)
+
+
+def test_a_broken_rulebook_never_loses_the_sale_from_the_trade_log(tmp_path, ai, monkeypatch):
+    ex = Exchange(krw=0)
+    bot = ai_bot(tmp_path, ex)
+    hold(bot, ex, "KRW-BTC", 1000.0, stop=ex.price * 0.95)
+    bot.state["positions"]["KRW-BTC"]["rule"] = "R1"
+
+    def disk_full(rule, pnl):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ai_trader, "record", disk_full)
+    ex.price *= 0.9
+    bot.step(now(ex))
+    assert bot.state["positions"] == {} and ",sell," in (tmp_path / "trades.csv").read_text(encoding="utf-8")
+
+
+def test_if_the_reviewer_fails_sells_still_happen_and_buys_do_not(tmp_path, ai):
+    ai["script"] = {"propose_trades": propose(("KRW-BTC", "buy", "R1"), ("KRW-ETH", "sell", "R2")),
+                    "review_trades": RuntimeError("timeout")}
+    assert ai_trader.debate(["claude", "gpt"], 0, "bar", FACTS) == ({}, {"KRW-ETH"})
+
+
+def test_malformed_ai_output_is_ignored_not_trusted(tmp_path, ai):
+    ai["script"] = {
+        "propose_trades": {"decisions": ["junk", {"market": ["KRW-BTC"], "action": "buy"},
+                                        {"market": "KRW-BTC", "action": "buy", "rule": "R1", "reason": "긴 이유" * 500}],
+                           "rule_proposals": [{"op": "add", "text": "새 규칙"}, "junk"]},
+        "review_trades": {"reviews": [{"market": "KRW-BTC", "agree": True}], "sell": {"KRW-ETH": 1},
+                          "rule_votes": [{"index": True, "accept": True}], "note": None}}
+    assert ai_trader.debate(["claude", "gpt"], 0, "bar", FACTS) == ({"KRW-BTC": "R1"}, set())
+    assert not any(r["text"] == "새 규칙" for r in ai_trader.rulebook())  # True is not index 0
+    assert len(ai_trader.JOURNAL.read_text(encoding="utf-8")) < 3000  # model text is stored truncated
+
+
+def test_missing_candles_mean_no_ai_decision_there_and_no_unconfirmed_buy(tmp_path, ai, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY")  # one AI: the 3-of-4 confirmation must back its buys
+    ex = Exchange()
+    bot = ai_bot(tmp_path, ex, markets=("KRW-BTC", "KRW-ETH"))
+    bot._refresh_candles(now(ex).timestamp())
+    del bot.candles["KRW-BTC"]  # BTC, and with it the confirmation, failed to load
+    ai["script"] = {"propose_trades": propose(("KRW-ETH", "buy", "R1"))}
+    snap = SimpleNamespace(cfg=bot.cfg, candles=bot.candles, state={"positions": {}}, can_buy=True, paper=True)
+    out = ai_trader.rows(snap, now(ex).floor("240min"), {"KRW-BTC": ex.price, "KRW-ETH": ex.price})
+    assert "KRW-BTC" not in out and not out["KRW-ETH"]["enter"]
+    assert list(ai["calls"][0][2]["markets"]) == ["KRW-ETH"]
+
+
+def test_a_failed_ai_call_is_retried_once_a_few_minutes_later(tmp_path, ai):
+    ex = Exchange()
+    ai["script"] = {"propose_trades": RuntimeError("529 overloaded"), "review_trades": review(agree=["KRW-BTC"])}
+    bot = ai_bot(tmp_path, ex)
+    decide(bot, now(ex))
+    decide(bot, now(ex) + pd.Timedelta(minutes=2))  # too soon
+    assert len(ai["calls"]) == 1
+    ai["script"]["propose_trades"] = propose(("KRW-BTC", "buy", "R1"))
+    decide(bot, now(ex) + pd.Timedelta(minutes=6))
+    assert ex.placed == [("buy", "KRW-BTC")]
+
+
+def test_a_restart_in_the_same_bar_does_not_ask_the_ais_again(tmp_path, ai):
+    ex = Exchange()
+    ai["script"] = {"propose_trades": propose(), "review_trades": review()}
+    decide(ai_bot(tmp_path, ex), now(ex))
+    asked = len(ai["calls"])
+    decide(ai_bot(tmp_path, ex), now(ex, 3))  # same ledger, same bar
+    assert asked == 2 and len(ai["calls"]) == asked
+
+
+def test_when_buying_is_paused_the_ais_are_not_asked_about_buys(tmp_path, ai):
+    live.pause_entries("test")
+    ex = Exchange()
+    decide(ai_bot(tmp_path, ex), now(ex))
+    assert ai["calls"] == []
+
+
+def test_the_ais_are_asked_on_the_signal_for_the_bar_about_to_trade(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ex = Exchange()
+    bot = ai_bot(tmp_path, ex)
+    bot._refresh_candles(now(ex).timestamp())
+    bar = now(ex).floor("240min")
+    monkeypatch.setattr(ai_trader, "prepare", lambda name, df, params: df.assign(enter=df.index == bar, entry_stop=np.nan))
+    assert ai_trader.candidates(bot, bar) == {"KRW-BTC"}
+
+
+def test_a_decision_is_never_reused_in_the_next_bar(tmp_path, ai):
+    ex = Exchange()
+    ai["script"] = {"propose_trades": propose(("KRW-BTC", "buy", "R1")), "review_trades": review(agree=["KRW-BTC"])}
+    bot = ai_bot(tmp_path, ex)
+    nxt = now(ex).floor("240min") + pd.Timedelta(hours=4)
+    decide(bot, nxt - pd.Timedelta(seconds=30))  # bought in the last seconds of a bar
+    sold = bot.state["positions"].pop("KRW-BTC")  # and sold again
+    bot.state["cash"] += sold["qty"] * sold["entry"]
+    bot.step(nxt + pd.Timedelta(seconds=5))  # new bar, candles not refreshed yet
+    assert ex.placed == [("buy", "KRW-BTC")]

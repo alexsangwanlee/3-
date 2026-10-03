@@ -35,7 +35,7 @@ def write_json(path, obj) -> None:
     """Atomic: a crash mid-write must never leave a half ledger or rulebook."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")  # two threads never share one
     tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     os.replace(tmp, p)
 
@@ -331,29 +331,39 @@ class Bot:
             row["enter"], row["entry_stop"] = False, float("nan")
         return row
 
-    def _ai_rows(self, bar, prices: dict) -> dict:
+    def _ai_rows(self, bar, prices: dict, now: pd.Timestamp, can_buy: bool) -> dict:
         """The ai sleeve's rows. The AIs decide once per bar in a background thread, on a snapshot, so a slow or
-        unreachable AI never delays any stop-loss; until they answer (or if they cannot), no new buys."""
+        unreachable AI never delays any stop-loss; until they answer (or if they cannot), no new buys.
+        A failed decision is retried once, 5 minutes later. A decided bar is saved, so a restart never re-asks."""
         job = getattr(self, "_ai", None)
-        if job is None or job["bar"] != bar:
+        if job and job["bar"] == bar and job["ok"]:
+            self.state["ai_bar"] = str(bar)  # here, not in the AI thread: save() may be serialising the state
+        if job is None and self.state.get("ai_bar") == str(bar):
+            self._ai = job = {"bar": bar, "rows": {}, "ok": True}
+        new = job is None or job["bar"] != bar
+        retry = not new and job["ok"] is False and job["tries"] < 2 and now - job["at"] >= pd.Timedelta(minutes=5)
+        if (new or retry) and self.last_refresh >= bar.timestamp():  # candles include the bar that just closed
             from types import SimpleNamespace
 
             from .ai_trader import rows
 
-            snap = SimpleNamespace(cfg=self.cfg, candles=dict(self.candles),
+            snap = SimpleNamespace(cfg=self.cfg, candles=dict(self.candles), can_buy=can_buy,
+                                   paper=isinstance(self.broker, PaperBroker),
                                    state={"positions": json.loads(json.dumps(self.state["positions"]))})
-            job = {"bar": bar, "rows": {}}
+            job = {"bar": bar, "rows": {}, "ok": None, "at": now, "tries": job["tries"] + 1 if retry else 1}
 
             def decide():
                 try:
                     job["rows"] = rows(snap, bar, dict(prices))
+                    job["ok"] = True
                 except Exception as e:
+                    job["ok"] = False
                     log.warning("ai: no decision this bar (%s)", type(e).__name__)
 
             job["thread"] = threading.Thread(target=decide, daemon=True)
             job["thread"].start()
             self._ai = job
-        return {m: r for m, r in job["rows"].items() if m in prices}
+        return {m: r for m, r in job["rows"].items() if m in prices} if job and job["bar"] == bar else {}
 
     # -- trading ---------------------------------------------------------
     def _order(self, side: str, market: str, amount: float, price: float, **meta) -> None:
@@ -412,16 +422,19 @@ class Bot:
                 del positions[m]
         self.save()
         pnl = fill * (1 - fee) / (order["entry"] * (1 + fee)) - 1
-        if pos and pos.get("rule") and m not in positions:  # an ai trade closed: its rule earns the result
-            from .ai_trader import record
-
-            record(pos["rule"], pnl)
         log.info("SELL %s qty=%.8f @ %.4f (%s) pnl=%.2f%%", m, vol, fill, order["reason"], pnl * 100)
         notify(f"[tradebot] 매도 {m} @ {fill:,.0f} ({order['reason']}) 손익 {pnl:+.2%}")
         self._append(self.cfg.trades_path, time=t, strategy=self.cfg.strategy, market=m, side="sell", qty=vol, price=fill,
                         reason=order["reason"], pnl=round(pnl, 6),
                         slip=round(1 - fill / order["price"], 6),  # vs the price the decision saw: learned by optimize
                         **self._costs(vol, fill, order["price"] - fill))
+        if pos and pos.get("rule") and m not in positions:  # an ai trade closed: its rule earns the result
+            try:  # after the trade log: a rulebook problem must never cost the record of a sale
+                from .ai_trader import record
+
+                record(pos["rule"], pnl)
+            except Exception as e:
+                log.warning("ai: rule %s record not updated (%s)", pos["rule"], type(e).__name__)
 
     def _costs(self, vol: float, fill: float, worse_by: float) -> dict:
         """What this fill cost in KRW: the exchange fee, and slippage against the price the decision saw."""
@@ -476,7 +489,8 @@ class Bot:
             self._append(self.cfg.equity_path, date=day, strategy=self.cfg.strategy,
                          equity=round(self.equity(prices), 2), funded=self.state["funded"])
             self.state["logged_day"] = day
-        rows = self._ai_rows(bar, prices) if self.cfg.strategy == "ai" else {}
+        can_buy = self.guard.can_trade and self.cfg.allow_entries and not self.state.get("flatten") and not entries_paused()
+        rows = self._ai_rows(bar, prices, now, can_buy) if self.cfg.strategy == "ai" else {}
         for m in self.cfg.markets if self.cfg.strategy != "ai" else ():
             if m in prices and m in self.candles:
                 try:
@@ -501,7 +515,7 @@ class Bot:
             if risk.lock_gain and risk.lock_giveback and pos["high"] >= pos["entry"] * (1 + risk.lock_gain):
                 pos["stop"] = max(pos["stop"] or 0.0, pos["high"] * (1 - risk.lock_giveback))
 
-        if self.guard.can_trade and self.cfg.allow_entries and not self.state.get("flatten") and not entries_paused():
+        if can_buy:
             eq = self.equity(prices)
             alloc = self.cfg.risk.alloc_per_market or 1.0 / len(self.cfg.markets)
             vols = [rows[m]["vol"] if m in rows else math.nan for m in self.cfg.markets]

@@ -152,6 +152,7 @@ def test_a_strategy_removed_while_holding_coins_keeps_managing_them(tmp_path, mo
     _, bots = _bots(config.Config(strategies=["donchian"]), False, FakeClient(), None, 1_000_000)
     assert [(b.cfg.strategy, b.cfg.allow_entries) for b in bots] == [("donchian", True), ("ema_cross", False)]
     assert bots[1].state["funded"] == 500_000  # its money is not counted twice
+    assert bots[0].state["funded"] == 1_000_000 - 100  # the budget minus what the leftover position ties up
 
 
 def test_resume_clears_the_kill_switch_only(tmp_path, monkeypatch, capsys):
