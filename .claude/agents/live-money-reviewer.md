@@ -22,7 +22,13 @@ Invariants that must hold. Check each against the diff (`git diff`) and the code
    - State files are written atomically (tmp + os.replace).
    - A restart never loses a pending order or a position.
 5. **Secrets.** No secret is ever logged, sent to Telegram or Claude, or returned by the panel API.
-6. **Claude.** It never places orders. Autopilot may only run risk-reducing actions (`claude.AUTO`).
+6. **AI.**
+   - The weekly review never places orders; autopilot may only run risk-reducing actions (`claude.AUTO`).
+   - The `ai` sleeve (`ai_trader.py`) can only pick markets from the config and buy/sell/hold.
+   - Size, stop, guards and budget come from the bot.
+   - A buy needs two opinions; a sell needs one.
+   - No AI answer means no new buys, while stops still run.
+   - Real money only after `ai_trader.PAPER_DAYS` days of paper results.
 
 How to check:
 - Run `python -m pytest -q tests/test_live_exchange.py tests/test_live.py tests/test_claude.py`.

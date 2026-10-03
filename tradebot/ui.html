@@ -82,7 +82,7 @@ button:disabled { opacity: .55; cursor: progress; }
 .check { list-style: none; padding: 0; margin: 0; }
 .check li { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--rule); }
 .check li:last-child { border-bottom: 0; }
-.check .icon { flex: none; width: 1.2em; font-weight: 800; }
+.check .icon { flex: none; min-width: 1.2em; font-weight: 800; }
 .check .ok { color: var(--ok); } .check .warn { color: var(--warn); }
 
 .equity { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
@@ -174,6 +174,12 @@ pre { background: var(--surface); padding: 16px; overflow-x: auto; font-size: 12
           <button type="button" id="claude-run">지금 검토 받기</button>
         </div>
         <div id="claude-msg" role="status" aria-live="polite"></div>
+      </div>
+      <div id="ai-trade" hidden>
+        <h2>AI 매매 (Claude·GPT 상호 검토)</h2>
+        <p class="muted" id="ai-gate"></p>
+        <ul class="check" id="ai-journal"></ul>
+        <details><summary>공유 룰북 보기</summary><ul class="check" id="ai-rules"></ul></details>
       </div>
     </div>
     <div>
@@ -409,8 +415,30 @@ function renderClaude() {
     $("#claude-action").textContent = `조치: ${ACTIONS[c.review.action]}${status ? ` (${status})` : ""}. ${c.review.reason}`;
   } else $("#claude-action").textContent = "";
   $("#claude-approve").hidden = !(c && c.status === "waiting");
+  renderAiTrade();
   $("#claude-run").disabled = !S.claude_set;
 }
+function renderAiTrade() {
+  const A = S.ai;
+  $("#ai-trade").hidden = !A;
+  if (!A) return;
+  $("#ai-gate").textContent = `한 AI가 제안하면 다른 AI가 검토합니다. 매수는 둘 다 동의해야, 매도는 한쪽만 원해도 합니다. `
+    + `수량·손절가·손실 한도는 봇이 정합니다. 모의매매 기록 ${A.paper_days}/28일${A.paper_days >= 28 ? " (실거래 가능)" : ""}.`;
+  const j = $("#ai-journal");
+  j.replaceChildren();
+  if (!A.journal.length) item(j, "–", "muted", "아직 판단이 없습니다. 규칙 전략에 신호가 나거나, 보유 중이면 하루 한 번 판단합니다.");
+  A.journal.forEach((e) => {
+    const did = [e.bought.length ? `매수 ${e.bought.join(", ")}` : "", e.sold.length ? `매도 ${e.sold.join(", ")}` : ""].filter(Boolean).join(", ") || "매매 없음";
+    const tokens = e.usage.reduce((n, u) => n + (u.input_tokens || 0) + (u.output_tokens || 0), 0);
+    item(j, e.bought.length || e.sold.length ? "✓" : "–", e.bought.length || e.sold.length ? "ok" : "muted",
+      `${e.bar.slice(0, 16).replace("T", " ")} ${e.proposer} 제안, ${e.reviewer} 검토: ${did}`
+      + `${(e.rules_adopted || []).length ? `, 새 규칙 ${e.rules_adopted.length}개 채택` : ""} (토큰 ${tokens.toLocaleString("ko-KR")})`);
+  });
+  const r = $("#ai-rules");
+  r.replaceChildren();
+  A.rules.forEach((x) => item(r, x.id, "muted", `${x.text} (거래 ${x.trades}, 승 ${x.wins}, 손익 합 ${pct(x.pnl)}, ${x.by === "seed" ? "검증된 기본 규칙" : x.by + " 제안"})`));
+}
+
 $("#claude-run").addEventListener("click", async () => {
   const btn = $("#claude-run");
   btn.disabled = true;
@@ -517,13 +545,15 @@ function drawPnl(points) {
 function renderHistory() {
   table("#trades", [["시각"], ["전략"], ["코인"], ["구분"], ["가격", true], ["이유"], ["손익", true]],
     S.trades.map((t) => [new Date(t.time).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" }), t.strategy || "-", t.market,
-      t.side === "buy" ? "매수" : "매도", Math.round(t.price).toLocaleString("ko-KR"), REASONS[t.reason] || t.reason,
+      t.side === "buy" ? "매수" : "매도", Math.round(t.price).toLocaleString("ko-KR"),
+      String(t.reason).startsWith("ai:") ? `AI 판단 (${t.reason.slice(3)})` : REASONS[t.reason] || t.reason,
       t.pnl === "" ? "-" : { text: pct(Number(t.pnl)), cls: tone(Number(t.pnl)) }]),
     "아직 거래가 없습니다. 추세 신호를 기다리는 중이며, 며칠씩 거래가 없는 것도 정상입니다.");
   $("#log").textContent = S.log.length ? S.log.join("\n") : "아직 기록이 없습니다.";
 }
 const LABELS = { donchian: "donchian · 신고가 돌파 (추천)", ema_cross: "ema_cross · 이평 교차 (추천)",
-  vbo: "vbo · 변동성 돌파 (검증 결과 손실)", rsi_mr: "rsi_mr · 역추세 (검증 결과 손실)" };
+  vbo: "vbo · 변동성 돌파 (검증 결과 손실)", rsi_mr: "rsi_mr · 역추세 (검증 결과 손실)",
+  ai: "ai · Claude·GPT가 판단 (AI 키 필요, 모의매매 28일 뒤 실거래 가능, 검증 전)" };
 const REASONS = { enter: "신호 매수", breakout: "돌파 매수", exit: "신호 매도", stop: "손절·수익 지키기",
   daily_loss: "하루 손실 한도", daily_target: "하루 목표", max_drawdown: "비상 정지" };
 
@@ -550,7 +580,7 @@ function fillForm() {
     }
     wrap.querySelectorAll("input").forEach((inp) => { inp.checked = chosen.includes(inp.value); });
   };
-  boxes("#strategies", "strategies", ["donchian", "ema_cross", "vbo", "rsi_mr"].filter((s) => S.all_strategies.includes(s)), c.strategies);
+  boxes("#strategies", "strategies", ["donchian", "ema_cross", "vbo", "rsi_mr", "ai"].filter((s) => S.all_strategies.includes(s)), c.strategies);
   boxes("#markets", "markets", [...new Set([...MARKETS, ...c.markets])], c.markets);
 }
 

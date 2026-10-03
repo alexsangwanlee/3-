@@ -138,37 +138,41 @@ def _clean(got: dict) -> dict:
             "reason": text(got.get("reason", ""), 400), "user_checks": items(got.get("user_checks"))}
 
 
-def ask(payload: dict, key: str) -> tuple[dict, dict]:
-    """Claude, through a forced tool call."""
-    r = requests.post(API, headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                      json={"model": MODEL, "max_tokens": 2000, "system": _system(), "tools": [TOOL],
-                            "tool_choice": {"type": "tool", "name": TOOL["name"]},
-                            "messages": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}]},
-                      timeout=120)
-    r.raise_for_status()
-    body = r.json()
-    got = next(b["input"] for b in body["content"] if b.get("type") == "tool_use")
-    return _clean(got), {k: int(v) for k, v in (body.get("usage") or {}).items() if isinstance(v, int)}
+def _usage(u: dict, cached: int = 0) -> dict:
+    return {"input_tokens": int(u.get("input_tokens", 0)), "output_tokens": int(u.get("output_tokens", 0)),
+            "cache_read_input_tokens": int(u.get("cache_read_input_tokens", cached))}
 
 
-def ask_gpt(payload: dict, key: str) -> tuple[dict, dict]:
-    """GPT, through the Responses API with a strict JSON schema. The fixed instructions come first, so OpenAI's
-    automatic prompt caching applies to them the same way."""
-    r = requests.post(GPT_API, headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
-                      json={"model": GPT_MODEL, "instructions": "\n\n".join(b["text"] for b in _system()),
-                            "input": json.dumps(payload, ensure_ascii=False, default=str),
-                            "text": {"format": {"type": "json_schema", "name": TOOL["name"],
-                                                "schema": TOOL["input_schema"], "strict": True}},
-                            "reasoning": {"effort": "low"}, "max_output_tokens": 4000},
-                      timeout=120)
+def call(provider: str, system: list[dict], payload: dict, tool: dict) -> tuple[dict, dict]:
+    """One structured answer from Claude ("claude") or GPT ("gpt"): (the tool/schema object, token usage).
+    `system` blocks come first so both providers' prompt caches cover them. Keys are read here and nowhere else."""
+    content = json.dumps(payload, ensure_ascii=False, default=str)
+    if provider == "claude":
+        r = requests.post(API, headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01",
+                                        "content-type": "application/json"},
+                          json={"model": MODEL, "max_tokens": 3000, "system": system, "tools": [tool],
+                                "tool_choice": {"type": "tool", "name": tool["name"]},
+                                "messages": [{"role": "user", "content": content}]}, timeout=120)
+        r.raise_for_status()
+        body = r.json()
+        return next(b["input"] for b in body["content"] if b.get("type") == "tool_use"), _usage(body.get("usage") or {})
+    r = requests.post(GPT_API, headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+                                        "content-type": "application/json"},
+                      json={"model": GPT_MODEL, "instructions": "\n\n".join(b["text"] for b in system), "input": content,
+                            "text": {"format": {"type": "json_schema", "name": tool["name"],
+                                                "schema": tool["input_schema"], "strict": True}},
+                            "reasoning": {"effort": "low"}, "max_output_tokens": 6000}, timeout=120)
     r.raise_for_status()
     body = r.json()
     out = next(c["text"] for item in body.get("output", []) if item.get("type") == "message"
                for c in item.get("content", []) if c.get("type") == "output_text")
     u = body.get("usage") or {}
-    return _clean(json.loads(out)), {"input_tokens": int(u.get("input_tokens", 0)),
-                                     "output_tokens": int(u.get("output_tokens", 0)),
-                                     "cache_read_input_tokens": int((u.get("input_tokens_details") or {}).get("cached_tokens", 0))}
+    return json.loads(out), _usage(u, (u.get("input_tokens_details") or {}).get("cached_tokens", 0))
+
+
+def providers() -> list[str]:
+    """The AIs with a key, Claude first."""
+    return [p for p, k in (("claude", "ANTHROPIC_API_KEY"), ("gpt", "OPENAI_API_KEY")) if os.environ.get(k)]
 
 
 def _possible(action: str) -> bool:
@@ -192,8 +196,8 @@ def apply(action: str, reason: str) -> None:
 
 def run(cfg: config.Config) -> dict | None:
     """Ask Claude, act if allowed, save and notify. None when no key is set or the API is unavailable."""
-    claude_key, gpt_key = os.environ.get("ANTHROPIC_API_KEY"), os.environ.get("OPENAI_API_KEY")
-    if not (claude_key or gpt_key):
+    ais = providers()
+    if not ais:
         return None
     payload = facts(cfg)
     digest = hashlib.sha256(json.dumps({k: v for k, v in payload.items() if k != "market"}, sort_keys=True,
@@ -203,7 +207,8 @@ def run(cfg: config.Config) -> dict | None:
         log.info("AI review skipped: nothing changed since %s", last.get("at"))
         return {**last, "skipped": True}
     try:
-        rv, usage = ask(payload, claude_key) if claude_key else ask_gpt(payload, gpt_key)
+        got, usage = call(ais[0], _system(), payload, TOOL)
+        rv = _clean(got)
     except Exception as e:  # never let the review break trading
         log.warning("AI review failed: %s", type(e).__name__)
         return None
@@ -215,7 +220,7 @@ def run(cfg: config.Config) -> dict | None:
         if cfg.claude_autopilot and rv["action"] in AUTO:
             apply(rv["action"], rv["reason"])
             status = "applied"
-    out = {"at": pd.Timestamp.now(tz="UTC").isoformat(), "model": MODEL if claude_key else GPT_MODEL, "review": rv,
+    out = {"at": pd.Timestamp.now(tz="UTC").isoformat(), "model": MODEL if ais[0] == "claude" else GPT_MODEL, "review": rv,
            "status": status,
            "usage": usage, "digest": digest}
     REVIEW.parent.mkdir(exist_ok=True)

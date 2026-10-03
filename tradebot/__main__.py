@@ -74,7 +74,8 @@ def cmd_optimize(cfg, args):
     if slip and slip > cfg.costs.slippage:  # real fills are worse than assumed: score strategies with reality
         print(f"live fills: slippage {slip:.3%} per side (assumed {cfg.costs.slippage:.3%}) -> using {slip:.3%}")
         cfg.costs = dataclasses.replace(cfg.costs, slippage=slip)
-    names = list(dict.fromkeys([*(args.strategies or [n for n in STRATEGIES if n != "hold"]), *cfg.strategies]))
+    rule_strategies = [s for s in cfg.strategies if s in STRATEGIES]  # the ai sleeve has nothing to backtest
+    names = list(dict.fromkeys([*(args.strategies or [n for n in STRATEGIES if n != "hold"]), *rule_strategies]))
     results = {}
     print(f"walk-forward: train {cfg.train_days}d / test {cfg.test_days}d, markets={cfg.markets}")
     for name in names:
@@ -84,25 +85,25 @@ def cmd_optimize(cfg, args):
     bench = backtest.run({m: prepare("hold", df) for m, df in frames.items()},
                          dataclasses.replace(_no_guard(cfg.risk), vol_reweight=False), cfg.costs, start=first_test)
 
-    m = backtest.metrics(backtest.portfolio({s: results[s]["oos_returns"] for s in cfg.strategies}))
-    m["trades"] = sum(results[s]["metrics"]["trades"] for s in cfg.strategies)
-    m["win_rate"] = sum(results[s]["metrics"]["win_rate"] * results[s]["metrics"]["trades"] for s in cfg.strategies) / max(m["trades"], 1)
+    m = backtest.metrics(backtest.portfolio({s: results[s]["oos_returns"] for s in rule_strategies}))
+    m["trades"] = sum(results[s]["metrics"]["trades"] for s in rule_strategies)
+    m["win_rate"] = sum(results[s]["metrics"]["win_rate"] * results[s]["metrics"]["trades"] for s in rule_strategies) / max(m["trades"], 1)
     lines = [HEADER] + [_row(n, r["metrics"]) for n, r in results.items()]
-    lines.append(_row(f"**portfolio: {' + '.join(cfg.strategies)}**", m))
+    lines.append(_row(f"**portfolio: {' + '.join(rule_strategies)}**", m))
     lines.append(_row("buy & hold (equal weight)", bench.metrics()))
     table = "\n".join(lines)
     print(table)
 
     sleeves = {}
-    for s in cfg.strategies:
+    for s in rule_strategies:
         params, train_sharpe = best_params(frames, s, cfg.risk, cfg.costs, cfg.train_days, btc=btc)
         oos = results[s]["metrics"]
         # same rule as the walk-forward: nothing worked -> no new entries for this sleeve
         sleeves[s] = {"params": params, "tradable": bool(oos["sharpe"] > 0 and train_sharpe > 0),
                       "recent_train_sharpe": round(float(train_sharpe), 2),
                       "oos_metrics": {k: float(v) for k, v in oos.items()}, "windows": results[s]["windows"]}
-    rev = review({n: r["oos_returns"] for n, r in results.items()}, cfg.strategies)
-    summary = {"generated_at": pd.Timestamp.now(tz="UTC").isoformat(), "strategies": cfg.strategies,
+    rev = review({n: r["oos_returns"] for n, r in results.items()}, rule_strategies)
+    summary = {"generated_at": pd.Timestamp.now(tz="UTC").isoformat(), "strategies": rule_strategies,
                "sleeves": sleeves, "portfolio_oos_metrics": {k: float(v) for k, v in m.items()},
                "costs_used": {"fee": cfg.costs.fee, "slippage": cfg.costs.slippage}, "self_review": rev}
     Path(config.SELECTED).parent.mkdir(exist_ok=True)
@@ -158,10 +159,20 @@ def diagnose(cfg, client, env, telegram: bool = False) -> tuple[list[str], list[
         problems.append(f'config.toml 의 mode 는 "paper"(모의매매) 또는 "live"(실거래)만 됩니다 (지금 "{cfg.mode}").')
     ok.append("모드: 실거래" if live else "모드: 모의매매 (실제 주문 없음)")
     ok.append(f"전략: {' + '.join(cfg.strategies)} (예산을 똑같이 나눠 각자 운용)")
-    unknown = [s for s in cfg.strategies if s not in STRATEGIES or s == "hold"]
+    unknown = [s for s in cfg.strategies if (s not in STRATEGIES or s == "hold") and s != "ai"]
     if unknown or not cfg.strategies:
         problems.append(f"config.toml 의 strategies = {cfg.strategies} 확인: "
-                        f"{[s for s in STRATEGIES if s != 'hold']} 중에서 고르세요.")
+                        f"{[s for s in STRATEGIES if s != 'hold'] + ['ai']} 중에서 고르세요.")
+    if "ai" in cfg.strategies:
+        from .ai_trader import PAPER_DAYS, paper_days
+
+        if not (env.get("ANTHROPIC_API_KEY") or env.get("OPENAI_API_KEY")):
+            problems.append("ai 전략은 Claude 또는 GPT API 키가 필요합니다 (제어판의 AI 검토 칸).")
+        if not [x for x in cfg.strategies if x != "ai"]:
+            problems.append("ai 전략은 규칙 전략(donchian, ema_cross 등) 하나 이상과 함께 고르세요. AI는 규칙 전략의 신호가 날 때 판단합니다.")
+        if live and paper_days() < PAPER_DAYS:
+            problems.append(f"ai 전략의 실거래는 모의매매 기록이 {PAPER_DAYS}일 이상 있어야 합니다 (지금 {paper_days()}일). "
+                            "모의매매로 먼저 돌리거나 전략에서 ai 를 빼세요.")
     if live and cfg.budget_krw <= 0:
         problems.append("config.toml 의 budget_krw 를 정하세요 (봇이 쓸 원화, 예: 1000000). 계좌의 나머지 돈은 건드리지 않습니다.")
     try:
@@ -373,7 +384,7 @@ def _bots(cfg, live, client, broker, budget):
     sleeves = cfg.sleeves()
     bots = [bot(n, p, t, budget / len(cfg.strategies)) for n, p, t in sleeves]
     for name, st in ledgers(cfg.mode).items():
-        if name in STRATEGIES and name not in {n for n, _, _ in sleeves} and st["positions"]:
+        if (name in STRATEGIES or name == "ai") and name not in {n for n, _, _ in sleeves} and st["positions"]:
             logging.warning("%s: 설정에서 빠졌지만 보유 중인 코인이 있어 손절/청산만 계속합니다", name)
             bots.append(bot(name, {}, False, st["funded"]))
     return sleeves, bots

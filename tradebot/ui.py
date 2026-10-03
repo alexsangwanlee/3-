@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import claude, config, live
+from . import ai_trader, claude, config, live
 from .report import report, totals
 from .strategies import STRATEGIES
 
@@ -75,7 +75,7 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
             else:
                 errors.append("Claude 자동 실행은 켜기/끄기만 고를 수 있습니다.")
         elif key == "strategies":
-            if value and all(s in STRATEGIES and s != "hold" for s in value):
+            if value and all((s in STRATEGIES and s != "hold") or s == "ai" for s in value):
                 out[key] = list(value)
             else:
                 errors.append("전략을 하나 이상 고르세요.")
@@ -222,7 +222,7 @@ def status() -> dict:
     mode = running or cfg.mode  # what is trading now, not what was saved for the next start
     sleeves, positions = [], []
     for s, st in live.ledgers(mode).items():  # includes a removed strategy still holding coins
-        if s in STRATEGIES and (s in cfg.strategies or st["positions"]):
+        if (s in STRATEGIES or s == "ai") and (s in cfg.strategies or st["positions"]):
             sleeves.append({"strategy": s, "cash": st["cash"], "funded": st["funded"], "positions": st["positions"],
                             "halted": bool((st.get("guard") or {}).get("halted"))})
     held = sorted({m for s in sleeves for m in s["positions"]})
@@ -254,6 +254,8 @@ def status() -> dict:
                    "markets": cfg.markets, "strategies": cfg.strategies, "claude_autopilot": cfg.claude_autopilot},
         "claude_set": bool(e.get("ANTHROPIC_API_KEY") or e.get("OPENAI_API_KEY")), "paused": live.pause_info(),
         "claude": json.loads(claude.REVIEW.read_text(encoding="utf-8")) if claude.REVIEW.exists() else None,
+        "ai": {"rules": ai_trader.rulebook(), "journal": ai_trader._read(ai_trader.JOURNAL, [])[-5:][::-1],
+               "paper_days": ai_trader.paper_days()} if "ai" in cfg.strategies else None,
         "keys_set": bool(e.get("UPBIT_ACCESS_KEY") and e.get("UPBIT_SECRET_KEY")),
         "telegram_set": bool(e.get("TELEGRAM_BOT_TOKEN") and e.get("TELEGRAM_CHAT_ID")),
         "equity": equity, "funded": funded, "positions": positions, "trades": trades, "log": tail,
@@ -262,7 +264,7 @@ def status() -> dict:
         "sleeves": {k: {"params": v["params"], "tradable": v["tradable"]} for k, v in sel.get("sleeves", {}).items()},
         "optimized_at": sel.get("generated_at"),
         "recommend": (sel.get("self_review") or {}).get("recommend"),
-        "all_strategies": [s for s in STRATEGIES if s != "hold"],
+        "all_strategies": [s for s in STRATEGIES if s != "hold"] + ["ai"],
     }
 
 

@@ -37,7 +37,7 @@ class Config:
     def sleeves(self) -> list[tuple[str, dict, bool]]:
         """[(strategy, params, tradable)] from the last `python -m tradebot optimize`, for the strategies it covers.
         tradable=False: that strategy stopped working recently, so it only manages open positions."""
-        sel = selection().get("sleeves", {})
+        sel = {**selection().get("sleeves", {}), "ai": {"params": {}, "tradable": True}}  # ai: decided live, no params
         return [(s, sel[s]["params"], sel[s]["tradable"]) for s in self.strategies if s in sel]
 
 

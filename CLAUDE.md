@@ -13,7 +13,12 @@ Everything users see (CLI messages, panel, Telegram, docs) is Korean, plain word
 - **Secrets.** Never commit `.env`, `config.toml`, `state/`, `logs/` or `data/` (all gitignored). Never use real API keys in tests or QA. Never start live mode unless the user explicitly asks.
 - **Money path** (live.py, upbit.py, risk.py, backtest.py, the run loop): change it test-first against the fake exchange in `tests/test_live_exchange.py`, then have the `live-money-reviewer` agent check the diff. Its invariants are listed in `.claude/agents/live-money-reviewer.md`.
 - **Strategy changes** (new strategy, filter, data source, model): first read `results/knowledge.json`, which lists every idea already tested and its verdict; don't re-test those unless the data changed. Then follow `.claude/agents/strategy-researcher.md`: pre-register, walk-forward, lockbox. Most ideas fail, and they stay out of production. Add each result to `results/` and to `results/knowledge.json`.
-- **Claude in the product** (`tradebot/claude.py`): it never places orders, and autopilot may only reduce risk. Treat model output as untrusted input.
+- **AI in the product:**
+  - The weekly review (`tradebot/claude.py`) never places orders, and its autopilot may only reduce risk.
+  - The `ai` sleeve (`tradebot/ai_trader.py`) lets Claude/GPT choose what to buy or sell, inside limits that stay in code: size, the 2-ATR stop, the guards and the sleeve budget.
+  - A buy needs two opinions (two AIs, or one AI plus the 3-of-4 confirmation); a sell needs one.
+  - The `ai` sleeve trades real money only after 28 days on paper.
+  - Never let model output set a size, a stop or a market outside the config. Treat model output as untrusted input.
 - **UI changes:** run the `panel-qa` agent (agent-browser, paper mode, fake keys).
 - **Setup or docs changes:** run the `first-run-tester` agent.
 - Keep diffs small (ponytail style): the stdlib or an existing dependency first. Never add a runtime dependency without a strong reason.
@@ -23,7 +28,8 @@ Everything users see (CLI messages, panel, Telegram, docs) is Korean, plain word
   - `live.py`: bot loop, ledgers, pending orders.
   - `__main__.py`: CLI, `diagnose`, run loop, weekly re-optimisation.
   - `ui.py` and `ui.html`: the panel.
-  - `claude.py`: weekly review.
+  - `claude.py`: weekly review, plus `call()` for both AIs.
+  - `ai_trader.py`: the `ai` sleeve (proposal, review, rulebook).
   - `learn.py`: gated self-review.
   - `report.py`: plan phases.
 - `results/`: research record and the operating plan (`plan.md`), including the pre-registered studies.

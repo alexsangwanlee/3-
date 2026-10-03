@@ -94,7 +94,8 @@
     }
   ],
   "pending": [
-    "wider universe (top 10/20 by turnover), LightGBM filter on ~24 features, Kronos-small forecast filter: results/data_study.md"
+    "wider universe (top 10/20 by turnover), LightGBM filter on ~24 features, Kronos-small forecast filter: results/data_study.md",
+    "ai sleeve (Claude/GPT propose + cross-review, shared rulebook): untested. LLM decisions cannot be backtested honestly (the models saw the prices in training); judge only from forward paper results, 28 days minimum before live"
   ],
   "costs": "fees + slippage take ~14% of gross profit (+196.7% before costs -> +168.4% after, 2022-04..2026-03); about half each",
   "goal": "maximum net profit after fees and slippage, with the worst drawdown kept above -30% (kill switch at -35%); not a daily target"

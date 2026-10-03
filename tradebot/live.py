@@ -311,6 +311,19 @@ class Bot:
         prepared = prepare(self.cfg.strategy, regularize(df, self.cfg.timeframe), self.cfg.params, btc=btc)
         return prepared.iloc[-1]
 
+    def _ai_rows(self, bar, prices: dict) -> dict:
+        """The ai sleeve's rows: the AIs decide once per bar; if they cannot, no new buys (stops still run)."""
+        if getattr(self, "_ai", (None,))[0] != bar:
+            from .ai_trader import rows
+
+            try:
+                got = rows(self, bar, prices)
+            except Exception as e:
+                log.warning("ai: no decision this bar (%s)", type(e).__name__)
+                got = {}
+            self._ai = (bar, got)
+        return {m: r for m, r in self._ai[1].items() if m in prices}
+
     # -- trading ---------------------------------------------------------
     def _order(self, side: str, market: str, amount: float, price: float, **meta) -> None:
         """Saved before it is sent, so a lost reply or a crash can never book it twice or lose it."""
@@ -351,7 +364,8 @@ class Bot:
             qty = old["qty"] + vol
             stop = fill - order["stop_dist"] if math.isfinite(order["stop_dist"]) else None
             positions[m] = {"qty": qty, "entry": (old["qty"] * old["entry"] + vol * fill) / qty, "stop": stop,
-                            "high": fill, "last": fill, "entry_time": t}
+                            "high": fill, "last": fill, "entry_time": t,
+                            **({"rule": order["reason"][3:]} if order["reason"].startswith("ai:") else {})}
             self.save()
             log.info("BUY  %s qty=%.8f @ %.4f (%s) stop=%s", m, vol, fill, order["reason"], stop)
             notify(f"[tradebot] 매수 {m} {vol * fill:,.0f}원 @ {fill:,.0f}" + (f", 손절가 {stop:,.0f}" if stop else ""))
@@ -367,6 +381,10 @@ class Bot:
                 del positions[m]
         self.save()
         pnl = fill * (1 - fee) / (order["entry"] * (1 + fee)) - 1
+        if pos and pos.get("rule") and m not in positions:  # an ai trade closed: its rule earns the result
+            from .ai_trader import record
+
+            record(pos["rule"], pnl)
         log.info("SELL %s qty=%.8f @ %.4f (%s) pnl=%.2f%%", m, vol, fill, order["reason"], pnl * 100)
         notify(f"[tradebot] 매도 {m} @ {fill:,.0f} ({order['reason']}) 손익 {pnl:+.2%}")
         self._append(self.cfg.trades_path, time=t, strategy=self.cfg.strategy, market=m, side="sell", qty=vol, price=fill,
@@ -427,8 +445,8 @@ class Bot:
             self._append(self.cfg.equity_path, date=day, strategy=self.cfg.strategy,
                          equity=round(self.equity(prices), 2), funded=self.state["funded"])
             self.state["logged_day"] = day
-        rows = {}
-        for m in self.cfg.markets:
+        rows = self._ai_rows(bar, prices) if self.cfg.strategy == "ai" else {}
+        for m in self.cfg.markets if self.cfg.strategy != "ai" else ():
             if m in prices and m in self.candles:
                 try:
                     rows[m] = self._signal_row(m, bar, prices[m])
@@ -463,7 +481,7 @@ class Bot:
                     continue
                 row, price = rows[m], prices[m]
                 if row["enter"] and self.state["last_enter_bar"].get(m) != str(bar):
-                    reason = "enter"
+                    reason = f"ai:{row['rule']}" if self.cfg.strategy == "ai" else "enter"
                 elif row["entry_stop"] <= price and self.state["last_entry_day"].get(m) != day:
                     reason = "breakout"
                 else:
