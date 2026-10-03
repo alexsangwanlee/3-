@@ -1,0 +1,33 @@
+# 복사해서 사용: cp config.example.toml config.toml
+
+# "paper" = 모의매매(기본, 실제 주문 없음) | "live" = 업비트 실거래
+mode = "paper"
+
+# 거래할 업비트 원화 마켓 (자금은 마켓 수로 균등 분할)
+markets = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
+
+# 캔들 단위(분). 백테스트와 실거래가 같은 값을 써야 합니다.
+timeframe = 60
+
+# "auto" = `python -m tradebot optimize`가 고른 전략/파라미터(results/selected.json) 사용
+# 직접 지정: "vbo" | "donchian" | "rsi_mr" | "ema_cross"  (+ 아래 [params])
+strategy = "auto"
+
+paper_krw = 1000000  # 모의매매 시작 자금
+
+# strategy를 직접 지정할 때만 사용. 예) vbo: k=0.5, ma=5, target_vol=0.03
+[params]
+
+[risk]
+# 하루 +N% 도달 시 전량 청산 후 그날 매매 중단. 0 = 끄기(기본).
+# 0.03으로 켤 수 있지만, 백테스트상 모든 전략에서 수익이 줄었습니다(큰 추세일의 수익을 잘라냄).
+# 근거: results/guard_ablation.md
+daily_target = 0
+daily_loss_limit = 0.05  # 하루 -5% 도달 → 전량 청산 후 그날 매매 중단 (0 = 끄기)
+max_drawdown = 0.35      # 최고점 대비 -35% → 전량 청산 후 봇 정지(수동 재시작 필요) (0 = 끄기)
+risk_per_trade = 0.01    # 손절 시 계좌의 최대 1% 손실이 되도록 포지션 크기 제한
+
+[costs]
+fee = 0.0005       # 업비트 원화마켓 수수료(편도)
+slippage = 0.0005  # 시장가 체결 미끄러짐 가정(편도)
+
