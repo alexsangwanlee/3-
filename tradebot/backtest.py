@@ -27,6 +27,12 @@ class Result:
         return metrics(self.daily_returns(), self.trades)
 
 
+def portfolio(rets: dict[str, pd.Series]) -> pd.Series:
+    """Equal sub-accounts that each compound on their own (no rebalancing): daily returns of the sum."""
+    eq = (1 + pd.DataFrame(rets).fillna(0.0)).cumprod().mean(axis=1)
+    return eq.pct_change().fillna(eq.iloc[0] - 1)
+
+
 def metrics(rets: pd.Series, trades: pd.DataFrame | None = None) -> dict:
     rets = rets.dropna()
     curve = (1 + rets).cumprod()

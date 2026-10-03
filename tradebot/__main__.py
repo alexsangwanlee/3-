@@ -54,7 +54,7 @@ def cmd_optimize(cfg, args):
     frames = _frames(cfg)
     if args.no_guard:
         cfg.risk = _no_guard(cfg.risk)
-    names = args.strategies or [n for n in STRATEGIES if n != "hold"]
+    names = list(dict.fromkeys([*(args.strategies or [n for n in STRATEGIES if n != "hold"]), *cfg.strategies]))
     results = {}
     print(f"walk-forward: train {cfg.train_days}d / test {cfg.test_days}d, markets={cfg.markets}")
     for name in names:
@@ -64,36 +64,35 @@ def cmd_optimize(cfg, args):
     bench = backtest.run({m: prepare("hold", df) for m, df in frames.items()},
                          dataclasses.replace(_no_guard(cfg.risk), vol_reweight=False), cfg.costs, start=first_test)
 
+    m = backtest.metrics(backtest.portfolio({s: results[s]["oos_returns"] for s in cfg.strategies}))
+    m["trades"] = sum(results[s]["metrics"]["trades"] for s in cfg.strategies)
+    m["win_rate"] = sum(results[s]["metrics"]["win_rate"] * results[s]["metrics"]["trades"] for s in cfg.strategies) / max(m["trades"], 1)
     lines = [HEADER] + [_row(n, r["metrics"]) for n, r in results.items()]
+    lines.append(_row(f"**portfolio: {' + '.join(cfg.strategies)}**", m))
     lines.append(_row("buy & hold (equal weight)", bench.metrics()))
     table = "\n".join(lines)
     print(table)
 
-    ranked = sorted(results.values(), key=lambda r: r["metrics"]["sharpe"], reverse=True)
-    pick = ranked[0]
-    params, train_sharpe = best_params(frames, pick["strategy"], cfg.risk, cfg.costs, cfg.train_days)
-    m = pick["metrics"]
-    # same rule as the walk-forward: nothing worked -> stay in cash
-    tradable = m["sharpe"] > 0 and train_sharpe > 0
-    summary = {
-        "strategy": pick["strategy"], "params": params, "tradable": bool(tradable),
-        "recent_train_sharpe": round(float(train_sharpe), 2),
-        "oos_metrics": {k: float(v) for k, v in m.items()},
-        "windows": pick["windows"],
-        "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
-    }
+    sleeves = {}
+    for s in cfg.strategies:
+        params, train_sharpe = best_params(frames, s, cfg.risk, cfg.costs, cfg.train_days)
+        oos = results[s]["metrics"]
+        # same rule as the walk-forward: nothing worked -> no new entries for this sleeve
+        sleeves[s] = {"params": params, "tradable": bool(oos["sharpe"] > 0 and train_sharpe > 0),
+                      "recent_train_sharpe": round(float(train_sharpe), 2),
+                      "oos_metrics": {k: float(v) for k, v in oos.items()}, "windows": results[s]["windows"]}
+    summary = {"generated_at": pd.Timestamp.now(tz="UTC").isoformat(), "strategies": cfg.strategies,
+               "sleeves": sleeves, "portfolio_oos_metrics": {k: float(v) for k, v in m.items()}}
     Path("results").mkdir(exist_ok=True)
     Path(config.SELECTED).write_text(json.dumps(summary, indent=2, default=str))
     Path("results/walkforward.md").write_text(
         f"# Walk-forward out-of-sample results\n\nGenerated {summary['generated_at']}, markets {cfg.markets}, "
         f"timeframe {cfg.timeframe}m, fee {cfg.costs.fee:.2%} + slippage {cfg.costs.slippage:.2%} per side, "
         f"daily target {cfg.risk.daily_target}, daily loss limit {cfg.risk.daily_loss_limit}.\n\n{table}\n")
-    if tradable:
-        print(f"\nselected: {pick['strategy']} {params} -> {config.SELECTED}")
-    else:
-        print(f"\nno strategy is profitable out-of-sample / recently -> the bot will stay in cash ({config.SELECTED})")
-    print(f"out-of-sample average day: {m['avg_daily']:+.3%} (target {TARGET:+.1%}), "
-          f"days that reached +3%: {m['days_ge_3pct']:.1%}")
+    for s, v in sleeves.items():
+        state = "trading" if v["tradable"] else "NOT trading new entries (stopped working recently)"
+        print(f"sleeve {s}: {v['params']} -> {state}")
+    print(f"portfolio out-of-sample average day: {m['avg_daily']:+.3%} (target {TARGET:+.1%}) -> {config.SELECTED}")
 
 
 UPBIT_ERRORS = {  # error name in Upbit's response -> what to do
@@ -109,8 +108,12 @@ def diagnose(cfg, client, env) -> tuple[list[str], list[str]]:
     """Everything `run` needs, checked up front. Returns (ok lines, problems). Never prints secrets."""
     ok, problems = [], []
     ok.append("mode: live (실거래)" if cfg.mode == "live" else "mode: paper (모의매매, 실제 주문 없음)")
-    if cfg.strategy != "auto" and cfg.strategy not in STRATEGIES:
-        problems.append(f"strategy = {cfg.strategy!r} 는 없는 전략입니다. auto 또는 {list(STRATEGIES)} 중 하나로.")
+    ok.append(f"전략: {' + '.join(cfg.strategies)} (예산을 똑같이 나눠 각자 운용)")
+    unknown = [s for s in cfg.strategies if s not in STRATEGIES or s == "hold"]
+    if unknown or not cfg.strategies:
+        problems.append(f"strategies = {cfg.strategies} 확인: {[s for s in STRATEGIES if s != 'hold']} 중에서 고르세요.")
+    if cfg.mode == "live" and cfg.budget_krw <= 0:
+        problems.append("budget_krw 를 정하세요 (봇이 쓸 원화, 예: 1000000). 계좌의 나머지 돈은 건드리지 않습니다.")
     try:
         client.tickers(cfg.markets)
         ok.append(f"markets: {', '.join(cfg.markets)}")
@@ -156,6 +159,12 @@ def cmd_check(cfg, args):
     print("준비 완료. 실행: python -m tradebot run" + (" --i-understand-the-risk" if cfg.mode == "live" else ""))
 
 
+def cmd_report(cfg, args):
+    from .report import report
+
+    print("\n".join(report(cfg.mode, f"logs/{cfg.mode}_equity.csv")))
+
+
 REOPTIMIZE_DAYS = 7
 
 
@@ -167,20 +176,20 @@ def selection_age_days(path=config.SELECTED) -> float:
     return (pd.Timestamp.now(tz="UTC") - made) / pd.Timedelta(days=1)
 
 
-def refresh(cfg) -> tuple[str, dict, bool]:
-    """Re-download data and re-run the walk-forward once a week, then load the selection."""
-    if cfg.strategy == "auto" and selection_age_days() >= REOPTIMIZE_DAYS:
+def refresh(cfg) -> list[tuple[str, dict, bool]]:
+    """Re-download data and re-run the walk-forward once a week, then load the sleeves."""
+    if selection_age_days() >= REOPTIMIZE_DAYS:
         logging.info("selection is older than %d days: fetch + optimize (a few minutes)", REOPTIMIZE_DAYS)
         try:
             cmd_fetch(cfg, None)
             cmd_optimize(cfg, argparse.Namespace(strategies=None, no_guard=False))
         except Exception:
             logging.exception("re-optimisation failed; keeping the previous selection")
-    return cfg.resolve_strategy()
+    return cfg.sleeves()
 
 
 def cmd_run(cfg, args):
-    from .live import Bot, BotConfig, UpbitBroker, notify
+    from .live import Bot, BotConfig, UpbitBroker, notify, run_bots
     from .upbit import UpbitClient
 
     live = cfg.mode == "live"
@@ -191,17 +200,25 @@ def cmd_run(cfg, args):
         _, problems = diagnose(cfg, client, os.environ)
         if problems:
             raise SystemExit("python -m tradebot check 를 먼저 통과하세요:\n  " + "\n  ".join(problems))
+    from .report import report
+
+    budget = cfg.budget_krw if live else cfg.paper_krw
+    broker = UpbitBroker(client) if live else None  # paper: every sleeve gets its own simulated holdings
     while True:
-        name, params, tradable = refresh(cfg)
-        bot_cfg = BotConfig(markets=cfg.markets, strategy=name, params=params, risk=cfg.risk, costs=cfg.costs,
-                            timeframe=cfg.timeframe, poll_seconds=cfg.poll_seconds,
-                            budget_krw=cfg.budget_krw if live else 0, allow_entries=tradable,
-                            state_path=f"state/{cfg.mode}_state.json", trades_path=f"logs/{cfg.mode}_trades.csv")
-        bot = Bot(bot_cfg, client, broker=UpbitBroker(client) if live else None, paper_krw=cfg.paper_krw)
+        sleeves = refresh(cfg)
+        if not args.once:  # weekly check against the plan's expected ranges
+            notify("[tradebot] 주간 리포트\n" + "\n".join(report(cfg.mode, f"logs/{cfg.mode}_equity.csv")))
+        bots = [Bot(BotConfig(markets=cfg.markets, strategy=name, params=params, risk=cfg.risk, costs=cfg.costs,
+                              timeframe=cfg.timeframe, poll_seconds=cfg.poll_seconds, allow_entries=tradable,
+                              state_path=f"state/{cfg.mode}_{name}.json", trades_path=f"logs/{cfg.mode}_trades.csv",
+                              equity_path=f"logs/{cfg.mode}_equity.csv"),
+                    client, broker=broker, funding=budget / len(sleeves))
+                for name, params, tradable in sleeves]
         if args.once:
-            return bot.step()
-        notify(f"[tradebot] {cfg.mode} 시작: {name} {params}" + ("" if tradable else " (신규 진입 없음, 현금 대기)"))
-        bot.run_for(REOPTIMIZE_DAYS * 86400)
+            return [b.step() for b in bots]
+        notify(f"[tradebot] {cfg.mode} 시작, 예산 {budget:,.0f}원을 {len(bots)}개 전략에 나눔: "
+               + ", ".join(f"{n}{'' if t else '(신규 진입 중단)'}" for n, _, t in sleeves))
+        run_bots(bots, REOPTIMIZE_DAYS * 86400, cfg.poll_seconds)
 
 
 def main():
@@ -209,6 +226,7 @@ def main():
     ap.add_argument("--config", default="config.toml")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check", help="verify config, API keys and alerts before running")
+    sub.add_parser("report", help="live/paper results vs the plan's expected ranges, and the next step")
     sub.add_parser("fetch", help="download/update candle history")
     b = sub.add_parser("backtest", help="backtest one strategy on the cached history")
     b.add_argument("--strategy", required=True, choices=list(STRATEGIES))
@@ -227,7 +245,7 @@ def main():
                         handlers=[logging.StreamHandler(), *(_file_handler() if args.cmd == "run" else [])])
     config.load_env()
     cfg = config.load(args.config)
-    {"check": cmd_check, "fetch": cmd_fetch, "backtest": cmd_backtest, "optimize": cmd_optimize, "run": cmd_run}[args.cmd](cfg, args)
+    {"check": cmd_check, "report": cmd_report, "fetch": cmd_fetch, "backtest": cmd_backtest, "optimize": cmd_optimize, "run": cmd_run}[args.cmd](cfg, args)
 
 
 def _file_handler():

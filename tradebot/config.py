@@ -1,7 +1,7 @@
 import json
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from .risk import Costs, Risk
@@ -14,8 +14,8 @@ class Config:
     mode: str = "paper"
     markets: list[str] = field(default_factory=lambda: ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"])
     timeframe: int = 240
-    strategy: str = "auto"
-    params: dict = field(default_factory=dict)
+    # Each strategy trades its own equal share of the budget; params are re-tuned weekly by `optimize`.
+    strategies: list[str] = field(default_factory=lambda: ["donchian", "ema_cross"])
     risk: Risk = field(default_factory=Risk)
     costs: Costs = field(default_factory=Costs)
     paper_krw: float = 1_000_000
@@ -25,16 +25,15 @@ class Config:
     train_days: int = 180
     test_days: int = 60
 
-    def resolve_strategy(self) -> tuple[str, dict, bool]:
-        """(strategy, params, tradable). `strategy = "auto"` uses what `python -m tradebot optimize` selected;
-        tradable=False means it found nothing worth trading: manage open positions, open no new ones."""
-        if self.strategy != "auto":
-            return self.strategy, self.params, True
+    def sleeves(self) -> list[tuple[str, dict, bool]]:
+        """[(strategy, params, tradable)] from the last `python -m tradebot optimize`.
+        tradable=False: that strategy stopped working recently, so it only manages open positions."""
         p = Path(SELECTED)
-        if not p.exists():
-            raise SystemExit(f"{SELECTED} not found: run `python -m tradebot optimize` first")
-        sel = json.loads(p.read_text())
-        return sel["strategy"], sel["params"], sel.get("tradable", True)
+        sel = json.loads(p.read_text()).get("sleeves", {}) if p.exists() else {}
+        missing = [s for s in self.strategies if s not in sel]
+        if missing:
+            raise SystemExit(f"{missing} not in {SELECTED}: run `python -m tradebot optimize` first")
+        return [(s, sel[s]["params"], sel[s]["tradable"]) for s in self.strategies]
 
 
 def load_env(path=".env") -> None:
@@ -55,4 +54,7 @@ def load(path: str = "config.toml") -> Config:
     raw = tomllib.loads(p.read_text()) if p.exists() else {}
     risk = Risk(**raw.pop("risk", {}))
     costs = Costs(**raw.pop("costs", {}))
-    return Config(**raw, risk=risk, costs=costs)
+    unknown = set(raw) - {f.name for f in fields(Config)}
+    if unknown:  # e.g. `strategy` / `params` from older versions
+        print(f"{path}: 알 수 없는 설정 무시 {sorted(unknown)} (config.example.toml 참고)")
+    return Config(**{k: v for k, v in raw.items() if k not in unknown}, risk=risk, costs=costs)

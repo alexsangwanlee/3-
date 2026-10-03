@@ -1,3 +1,5 @@
+import dataclasses
+
 import pandas as pd
 import pytest
 from conftest import make_bars
@@ -29,7 +31,7 @@ def bot(tmp_path):
                     risk=Risk(daily_target=0.03, daily_loss_limit=0.02, max_drawdown=None, risk_per_trade=0),
                     costs=Costs(0, 0), history_bars=500,
                     state_path=str(tmp_path / "state.json"), trades_path=str(tmp_path / "trades.csv"))
-    return Bot(cfg, FakeClient(df), paper_krw=1_000_000)
+    return Bot(cfg, FakeClient(df), funding=1_000_000)
 
 
 def test_paper_bot_enters_then_locks_daily_target(bot):
@@ -41,7 +43,7 @@ def test_paper_bot_enters_then_locks_daily_target(bot):
     bot.client.price *= 1.04
     bot.step(now + pd.Timedelta(minutes=1))
     assert bot.state["positions"] == {} and bot.guard.locked
-    assert bot.state["paper"]["cash"] == pytest.approx(1_040_000)
+    assert bot.state["cash"] == pytest.approx(1_040_000)
 
     bot.step(now + pd.Timedelta(minutes=2))  # locked: stays flat for the rest of the day
     assert bot.state["positions"] == {}
@@ -59,7 +61,7 @@ def test_live_sell_never_touches_coins_the_bot_did_not_buy(bot):
     class AccountBroker:  # account already held 1 BTC before the bot bought 0.01
         sold = None
 
-        def cash(self):
+        def available_krw(self):
             return 0.0
 
         def holdings(self):
@@ -75,11 +77,43 @@ def test_live_sell_never_touches_coins_the_bot_did_not_buy(bot):
     assert AccountBroker.sold == 0.01 and bot.state["positions"] == {}
 
 
-def test_budget_caps_what_the_bot_spends(bot):
-    bot.cfg.budget_krw = 100_000  # account holds 1,000,000 but the bot may only use 100,000
-    bot.step(bot.client.df.index[-1] + pd.Timedelta(minutes=5))
-    pos = bot.state["positions"]["KRW-BTC"]
+class RichAccount:
+    """A live account holding far more KRW than the bot was given."""
+
+    def __init__(self):
+        self.held = {}
+
+    def available_krw(self):
+        return 10_000_000
+
+    def holdings(self):
+        return self.held
+
+    def buy(self, market, krw, price):
+        self.held[market] = krw / price
+        return krw / price, price
+
+    def sell(self, market, qty, price):
+        self.held[market] = 0.0
+        return price
+
+
+def test_bot_spends_only_its_own_ledger_even_if_the_account_holds_more(bot):
+    small = Bot(dataclasses.replace(bot.cfg, state_path=bot.cfg.state_path + ".small"), bot.client,
+                broker=RichAccount(), funding=100_000)
+    small.step(bot.client.df.index[-1] + pd.Timedelta(minutes=5))
+    pos = small.state["positions"]["KRW-BTC"]
     assert pos["qty"] * bot.client.price == pytest.approx(100_000)
+    assert small.state["cash"] == pytest.approx(0.0)
+
+
+def test_raising_the_budget_on_restart_adds_cash_without_tripping_the_daily_guard(bot):
+    now = bot.client.df.index[-1] + pd.Timedelta(minutes=5)
+    bot.step(now)  # all-in with 1,000,000
+    bigger = Bot(bot.cfg, bot.client, funding=1_500_000)  # user raised budget_krw and restarted
+    assert bigger.state["cash"] == pytest.approx(500_000)
+    bigger.step(now + pd.Timedelta(minutes=1))  # +50% equity is new money, not profit: no +3% lock
+    assert "KRW-BTC" in bigger.state["positions"] and not bigger.guard.locked
 
 
 def test_stay_in_cash_mode_opens_nothing_but_still_stops_out(bot):
@@ -91,7 +125,7 @@ def test_stay_in_cash_mode_opens_nothing_but_still_stops_out(bot):
     price = bot.client.price
     bot.state["positions"]["KRW-BTC"] = {"qty": 1000.0, "entry": price, "stop": price * 1.01,
                                          "entry_time": str(now - pd.Timedelta(days=1))}
-    bot.state["paper"]["holdings"]["KRW-BTC"] = 1000.0
+    bot.state["paper_holdings"]["KRW-BTC"] = 1000.0
     bot.step(now + pd.Timedelta(minutes=1))
     assert bot.state["positions"] == {}  # stop still fired
 
@@ -129,3 +163,12 @@ def test_live_giveback_ratchets_the_stop_and_sells_on_the_drop(bot):
     bot.client.price = entry * 1.25
     bot.step(now + pd.Timedelta(minutes=2))
     assert bot.state["positions"] == {}
+
+
+def test_each_day_is_logged_once_per_sleeve(bot):
+    bot.cfg.equity_path = bot.cfg.state_path + ".equity.csv"
+    now = bot.client.df.index[-1] + pd.Timedelta(minutes=5)
+    for t in (now, now + pd.Timedelta(minutes=1), now + pd.Timedelta(days=1)):
+        bot.step(t)
+    logged = pd.read_csv(bot.cfg.equity_path)
+    assert len(logged) == 2 and set(logged.columns) == {"date", "strategy", "equity", "funded"}

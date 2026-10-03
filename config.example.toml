@@ -10,15 +10,14 @@ markets = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
 # 240(4시간봉) + 변동성 역가중: 1시간봉 대비 표본외 샤프 1.17 vs 0.82, 최대낙폭 -18% vs -27% (results/optimization.md)
 timeframe = 240
 
-# "auto" = `python -m tradebot optimize`가 고른 전략/파라미터(results/selected.json) 사용
-# 직접 지정: "vbo" | "donchian" | "rsi_mr" | "ema_cross"  (+ 아래 [params])
-strategy = "auto"
+# 예산을 똑같이 나눠 각자 운용할 전략들. 파라미터는 매주 walk-forward 로 자동 재조정됩니다.
+# donchian + ema_cross 반반이 donchian 단독보다 분기 수익 확률 42% → 63%, 최대낙폭 -17.6% → -16.0% (results/plan.md)
+# 고를 수 있는 전략: "donchian" | "ema_cross" | "vbo" | "rsi_mr"
+strategies = ["donchian", "ema_cross"]
 
 paper_krw = 1000000  # 모의매매 시작 자금
-budget_krw = 0       # 실거래에서 봇이 쓸 최대 원화 (0 = 계좌 전체). 예: 1000000 이면 100만원까지만 사용
-
-# strategy를 직접 지정할 때만 사용. 예) vbo: k=0.5, ma=5, target_vol=0.03
-[params]
+budget_krw = 0       # 실거래 필수: 봇에게 맡길 원화 (예: 1000000). 봇은 이 장부 안에서만 매매하고, 수익도 장부 안에서 굴립니다.
+                     # 늘리거나 줄이면 재시작 시 그 차이만큼 장부에 넣고 뺍니다 (수익 출금 = 줄인 뒤 업비트에서 출금).
 
 [risk]
 # 하루 +N% 도달 시 전량 청산 후 그날 매매 중단. 0 = 끄기(기본).

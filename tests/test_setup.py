@@ -51,7 +51,29 @@ def test_unregistered_ip_gets_actionable_advice_and_never_leaks_the_key():
 
 def test_live_mode_with_working_keys_shows_balance():
     env = {"UPBIT_ACCESS_KEY": SECRET, "UPBIT_SECRET_KEY": SECRET}
-    ok, problems = diagnose(config.Config(mode="live"), FakeClient(), env)
+    ok, problems = diagnose(config.Config(mode="live", budget_krw=1_000_000), FakeClient(), env)
     assert problems == []
     assert any("1,500,000" in line for line in ok)
     assert SECRET not in "\n".join(ok)
+
+
+def test_sleeves_come_from_the_weekly_selection(tmp_path, monkeypatch):
+    sel = tmp_path / "selected.json"
+    sel.write_text('{"generated_at": "2026-10-01T00:00:00+00:00", "sleeves": {'
+                   '"donchian": {"params": {"n": 96}, "tradable": true},'
+                   '"ema_cross": {"params": {"fast": 12}, "tradable": false}}}')
+    monkeypatch.setattr(config, "SELECTED", str(sel))
+    sleeves = config.Config(strategies=["donchian", "ema_cross"]).sleeves()
+    assert sleeves == [("donchian", {"n": 96}, True), ("ema_cross", {"fast": 12}, False)]
+
+
+def test_live_mode_needs_a_budget():
+    env = {"UPBIT_ACCESS_KEY": SECRET, "UPBIT_SECRET_KEY": SECRET}
+    _, problems = diagnose(config.Config(mode="live", budget_krw=0), FakeClient(), env)
+    assert any("budget_krw" in p for p in problems)
+
+
+def test_old_config_keys_are_ignored_not_fatal(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('strategy = "auto"\nmode = "paper"\n[params]\n')
+    assert config.load(p).mode == "paper"

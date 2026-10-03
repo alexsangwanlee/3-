@@ -96,3 +96,11 @@ def test_giveback_locks_most_of_a_big_winner_but_ignores_normal_moves():
     small = [100, 110, 125, 106, 104]  # peak +25%: rule not armed, keeps the position
     df = _finish(flat_bars(small), enter=pd.Series([True] + [False] * 4, index=flat_bars(small).index))
     assert backtest.run({"X": df}, risk, Costs(0, 0)).trades.empty
+
+
+def test_portfolio_is_equal_sub_accounts_without_rebalancing():
+    idx = pd.date_range("2024-01-01", periods=2, tz="UTC")
+    a = pd.Series([0.10, 0.10], index=idx)  # sleeve a: 1.00 -> 1.10 -> 1.21
+    b = pd.Series([0.00, 0.00], index=idx)  # sleeve b: flat
+    r = backtest.portfolio({"a": a, "b": b})
+    assert r.tolist() == pytest.approx([0.05, 1.105 / 1.05 - 1])  # mean equity 1.05, then 1.105

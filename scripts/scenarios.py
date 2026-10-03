@@ -1,17 +1,20 @@
 """Forecast ranges, market regimes, crash days and assumption sensitivity for the shipped config.
 
-    PYTHONPATH=. python scripts/scenarios.py      -> results/scenarios.md
+    PYTHONPATH=. python scripts/scenarios.py      -> results/scenarios.md, results/bands.json
+
+bands.json holds the "normal range" that `python -m tradebot report` checks live results against.
 
 Everything is computed from walk-forward out-of-sample days only (python -m tradebot fetch first).
 """
 import dataclasses
+import json
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from tradebot import config, data, optimize, strategies
+from tradebot import backtest, config, data, optimize, strategies
 from tradebot.risk import Costs
 
 CAPITAL = 10_000_000  # KRW, for the forecast table
@@ -35,7 +38,9 @@ def delayed(name, df, params=None):
 def variant(args):
     label, kind = args
     cfg = config.load()
-    risk, costs, markets = cfg.risk, cfg.costs, None
+    risk, costs, markets, names = cfg.risk, cfg.costs, None, cfg.strategies
+    if kind == "single":
+        names = ["donchian"]
     if kind == "fee":
         costs = Costs(fee=0.001, slippage=cfg.costs.slippage)
     elif kind == "slip":
@@ -46,8 +51,9 @@ def variant(args):
         markets = ["KRW-BTC", "KRW-ETH"]
     elif kind == "nogiveback":
         risk = dataclasses.replace(risk, lock_gain=None)
-    r = optimize.walk_forward(frames(cfg, markets), "donchian", risk, costs, cfg.train_days, cfg.test_days)
-    return label, r["oos_returns"]
+    f = frames(cfg, markets)
+    rets = {n: optimize.walk_forward(f, n, risk, costs, cfg.train_days, cfg.test_days)["oos_returns"] for n in names}
+    return label, backtest.portfolio(rets)
 
 
 def bootstrap(rets, days, n=10_000, block=20, seed=0):
@@ -68,13 +74,14 @@ def stats(rets):
 
 def main():
     cfg = config.load()
-    kinds = [("기본 (현재 설정)", "base"), ("수수료 0.05% → 0.1%", "fee"), ("슬리피지 0.05% → 0.2%", "slip"),
+    kinds = [("기본 (현재 설정)", "base"), ("donchian 단독 (이전 설정)", "single"), ("수수료 0.05% → 0.1%", "fee"), ("슬리피지 0.05% → 0.2%", "slip"),
              ("모든 주문이 한 봉(4시간) 늦게", "delay"), ("BTC·ETH만", "btceth"), ("수익 지키기(giveback) 끔", "nogiveback")]
     with ProcessPoolExecutor(3) as ex:
         res = dict(ex.map(variant, kinds))
     base = res["기본 (현재 설정)"]
     out = [f"# 예측과 변수: 이 봇이 어떻게 움직이는가\n\n생성 {pd.Timestamp.now(tz='UTC'):%Y-%m-%d}, "
-           f"{cfg.timeframe}분봉, 시장 {', '.join(cfg.markets)}. 모든 숫자는 walk-forward 표본외 {len(base)}일"
+           f"{cfg.timeframe}분봉, 시장 {', '.join(cfg.markets)}, 전략 {' + '.join(cfg.strategies)} (예산 균등 분할). "
+           f"모든 숫자는 walk-forward 표본외 {len(base)}일"
            f" ({base.index[0]:%Y-%m-%d} ~ {base.index[-1]:%Y-%m-%d})에서 계산했습니다.\n"]
 
     out.append(f"## 1. 예측: {CAPITAL:,}원으로 시작하면\n")
@@ -86,7 +93,7 @@ def main():
     for days, name in [(30, "1개월"), (91, "3개월"), (365, "1년")]:
         tot, dd = bootstrap(base, days)
         q = np.percentile(tot, [5, 25, 50, 75, 95])
-        ranges[days] = (q[0], np.percentile(dd, 5))
+        ranges[days] = (q[0], np.percentile(dd, 5), q[2])
         cells = " | ".join(f"{v:+.1%} ({CAPITAL * (1 + v):,.0f}원)" for v in q)
         out.append(f"| {name} | {cells} | {(tot < 0).mean():.0%} | {(dd <= -0.10).mean():.0%} | {(dd <= -0.20).mean():.0%} |")
     out.append("\n**읽는 법:** 한 달 단위로는 절반 가까이가 손실입니다. 수익은 강세장 몇 달에 몰려서 납니다(아래 2번). "
@@ -128,18 +135,23 @@ def main():
 
 | 상황 | 봇이 자동으로 하는 일 | 사용자가 할 일 |
 |---|---|---|
-| 신고가 돌파 신호 | 시장가 매수. 비중 = 1/5 × 변동성 가중, 손절가 = 진입가 - 3×ATR | 없음 |
-| 가격이 손절가에 닿음 | 10초 안에 시장가 매도 | 없음. 손절은 정상 동작입니다 (승률 약 30%, 이익 거래가 손실 거래보다 큼) |
+| 매수 신호 (donchian 신고가 돌파, ema_cross 골든크로스) | 시장가 매수. 비중 = 전략 장부의 1/5 × 변동성 가중, 손절가 = 진입가 - 2~3×ATR | 없음 |
+| 가격이 손절가에 닿음 | 10초 안에 시장가 매도 | 없음. 손절은 정상 동작입니다 (승률 25~30%, 이익 거래가 손실 거래보다 훨씬 큼) |
 | 진입 후 +30% 이상 오른 뒤 최고가에서 -15% | 매도해서 수익 확정 | 없음 |
-| 하루 손실 -5% | 전량 청산, 다음 날(09:00 KST)까지 신규 매매 중단 | 없음 |
-| 최고점 대비 -35% | 전량 청산 후 봇 정지, 텔레그램 알림 | 원인 확인 후 `state/live_state.json` 삭제하고 재시작할지 결정 |
-| 주간 재최적화에서 매매할 전략 없음 | 신규 진입 중단, 보유 포지션의 손절·청산만 관리 | 없음. 시장이 바뀌면 다음 주에 자동 재개 |
+| 한 전략 장부가 하루 -5% | 그 전략만 전량 청산, 다음 날(09:00 KST)까지 신규 매매 중단 | 없음 |
+| 한 전략 장부가 최고점 대비 -35% | 그 전략만 전량 청산 후 정지, 텔레그램 알림 | 원인 확인 후 `state/live_<전략>.json` 을 지우고 재시작할지 결정 |
+| 주간 재최적화에서 한 전략이 최근 안 통함 | 그 전략만 신규 진입 중단, 보유 포지션의 손절·청산은 계속 | 없음. 다시 통하면 다음 주에 자동 재개 |
 | API·네트워크 오류 | 10초마다 재시도, 첫 오류에 알림 | 알림이 계속 오면 `python -m tradebot check` |
 | 한 달 수익률이 {m1[0]:+.1%} 이하 | (자동 대응 없음) | 과거 기준 20달에 1번 오는 나쁜 달입니다. 끄지 마세요. 손절 원칙을 지키는 게 봇의 전부입니다 |
 | 1년 안 낙폭이 {m12[1]:.1%}보다 깊어짐 | -35% 전에는 계속 매매 | 과거 기준 20번에 1번보다 나쁜 상황입니다. 점검 신호로 보고, 모의매매로 돌려 원인을 확인하세요 |
-| 계좌가 신고점 | (자동 대응 없음) | 수익 일부 출금 (워뇨띠: 수익의 80%를 출금, 한 번에 자산의 약 10%씩) |
+| 매주 | 주간 리포트를 텔레그램으로 보냄 (`python -m tradebot report` 와 같음) | 리포트의 '점검 필요'·'증액 가능'·'신고점' 문구만 확인 |
+| 봇 장부가 신고점 | 리포트가 출금을 권함 | 분기 수익의 30~50%만큼 `budget_krw` 를 낮추고 재시작한 뒤 업비트에서 출금 (워뇨띠 습관) |
 """)
     Path("results/scenarios.md").write_text("\n".join(out))
+    Path("results/bands.json").write_text(json.dumps({
+        "generated_at": pd.Timestamp.now(tz="UTC").isoformat(), "strategies": cfg.strategies,
+        "1m_p5": ranges[30][0], "3m_p5": ranges[91][0], "1y_dd_p5": ranges[365][1],
+        "1m_median": ranges[30][2], "1y_median": ranges[365][2]}, indent=2))
     print("\n".join(out))
 
 
